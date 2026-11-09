@@ -135,12 +135,14 @@ final class TaskbarPanelController {
         dockFinderHostingView = finderHosting
         dockFinderPanel = makePanel(contentView: finderHosting)
         optionHotKeyMonitor = OptionWindowHotKeyMonitor { [weak self] target in
+            self?.shortcutMonitor?.cancelLongOptionHold()
             switch target {
             case .window(let index): self?.openShortcutWindow(index)
             case .favorite(let index): self?.openShortcutFavorite(index)
             }
         }
         minimizeHotKeyMonitor = GlobalMinimizeHotKeyMonitor { [weak self] in
+            self?.shortcutMonitor?.cancelLongOptionHold()
             guard UserDefaults.standard.object(forKey: "taskdock.optionDEnabledV1") as? Bool ?? true else { return }
             self?.performTrialAction { self?.toggleAllAppVisibility() }
         }
@@ -148,7 +150,8 @@ final class TaskbarPanelController {
         shortcutMonitor = ModifierDoubleTapMonitor(
             settings: settings,
             onDoubleTap: { [weak self] in self?.toggleTaskbarVisibility() },
-            onOptionHoldChanged: { [weak self] isHeld in self?.setOptionShortcutsVisible(isHeld) }
+            onOptionHoldChanged: { [weak self] isHeld in self?.setOptionShortcutsVisible(isHeld) },
+            onLongOptionHold: { [weak self] in self?.checkOverlappingWindowsOnDemand() }
         )
         shortcutMonitor?.start()
         reposition()
@@ -1469,7 +1472,23 @@ final class TaskbarPanelController {
         }
     }
 
-    private func checkWindowAvoidance() {
+    private func checkOverlappingWindowsOnDemand() {
+        guard settings.layoutMode == .taskbar, hasLicenseAccess, permissionService.isTrusted,
+              !isHiddenInDock, !isSuppressedForFullscreen else { return }
+        let latestWindows = windowService.enumerateWindows(
+            excludingPID: ProcessInfo.processInfo.processIdentifier,
+            showHiddenApps: settings.showHiddenApps,
+            taskbarHiddenPIDs: taskbarHiddenPIDs,
+            blacklistedAppKeys: settings.blacklistedAppKeys,
+            blockedWindowRules: settings.blockedWindowRules,
+            finderTabsAsWindows: settings.finderTabsAsWindows
+        )
+        checkWindowAvoidance(scannedWindows: latestWindows, manual: true)
+        lastWindowAvoidanceCheckCompletedAt = Date()
+    }
+
+    private func checkWindowAvoidance(scannedWindows: [WindowModel]? = nil,
+                                      manual: Bool = false) {
         let appearance = TaskbarOverlapAppearance.shared
         guard settings.layoutMode == .taskbar, hasLicenseAccess, permissionService.isTrusted,
               !isHiddenInDock, !isSuppressedForFullscreen, let panel, panel.isVisible,
@@ -1481,14 +1500,16 @@ final class TaskbarPanelController {
         let inset = settings.taskbarSideInset
         let bar = CGRect(x: panel.frame.minX + inset, y: panel.frame.minY + 4,
             width: max(0, panel.frame.width - 2 * inset), height: settings.taskbarHeight)
-        appearance.update(overlaps: windowService.hasVisibleOverlap(windows, panelFrame: bar,
+        let candidates = scannedWindows ?? windows
+        appearance.update(overlaps: windowService.hasVisibleOverlap(candidates, panelFrame: bar,
             desktopTop: desktopTop), delay: StandardLayoutAvoidanceSettings.itemDarkeningDelay)
-        guard !usesNativeDockReservation, StandardLayoutAvoidanceSettings.isEnabled,
+        guard (manual || (!usesNativeDockReservation && StandardLayoutAvoidanceSettings.isEnabled)),
               !windowService.isAnimatingWindowAvoidance else { return }
-        guard reorderRefreshPauseUntil.map({ $0 <= Date() }) ?? true,
-              settingsRefreshPauseUntil.map({ $0 <= Date() }) ?? true else { return }
-        windowService.adjustStandardLayoutsOnce(windows, panelFrame: bar,
-            screenFrame: screen.frame, visibleFrame: screen.visibleFrame, desktopTop: desktopTop)
+        guard manual || ((reorderRefreshPauseUntil.map({ $0 <= Date() }) ?? true)
+            && (settingsRefreshPauseUntil.map({ $0 <= Date() }) ?? true)) else { return }
+        windowService.adjustStandardLayoutsOnce(candidates, panelFrame: bar,
+            screenFrame: screen.frame, visibleFrame: screen.visibleFrame,
+            desktopTop: desktopTop, manual: manual)
     }
 
     private func updateWindowSpaceReservations(force: Bool) {

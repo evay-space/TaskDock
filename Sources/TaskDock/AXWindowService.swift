@@ -443,7 +443,8 @@ final class AXWindowService {
     }
 
     func adjustStandardLayoutsOnce(_ windows: [WindowModel], panelFrame: CGRect,
-                                   screenFrame: CGRect, visibleFrame: CGRect, desktopTop: CGFloat) {
+                                   screenFrame: CGRect, visibleFrame: CGRect, desktopTop: CGFloat,
+                                   manual: Bool = false) {
         let ids = Set(windows.map(\.nativeWindowID))
         standardLayoutPolicy.retain(ids)
         standardAdjustedFrames = standardAdjustedFrames.filter { ids.contains($0.key) }
@@ -451,7 +452,7 @@ final class AXWindowService {
         for window in windows where !window.isMinimized {
             guard seen.insert(CFHash(window.axWindow)).inserted,
                   let current = windowFrame(window.axWindow) else { continue }
-            let allOverlaps = StandardLayoutAvoidanceSettings.avoidsAllOverlaps
+            let allOverlaps = manual || StandardLayoutAvoidanceSettings.avoidsAllOverlaps
             let eligible = (allOverlaps || window.isFocused)
                 && (window.accessibilitySubrole == kAXStandardWindowSubrole || (window.accessibilitySubrole ?? "").isEmpty)
                 && NSRunningApplication(processIdentifier: window.pid)?.isHidden == false
@@ -466,10 +467,16 @@ final class AXWindowService {
                 proposed = StandardLayoutAdjustmentPolicy.target(window: current,
                     screen: screenFrame, visible: visibleFrame, panel: panelFrame, desktopTop: desktopTop)
             }
-            guard let target = standardLayoutPolicy.adjustment(id: window.nativeWindowID,
-                frame: current, proposed: proposed, dragging: NSEvent.pressedMouseButtons != 0,
-                now: Date.timeIntervalSinceReferenceDate,
-                settleDelay: StandardLayoutAvoidanceSettings.settleDelay) else { continue }
+            let target: CGRect?
+            if manual {
+                target = NSEvent.pressedMouseButtons == 0 ? proposed : nil
+            } else {
+                target = standardLayoutPolicy.adjustment(id: window.nativeWindowID,
+                    frame: current, proposed: proposed, dragging: NSEvent.pressedMouseButtons != 0,
+                    now: Date.timeIntervalSinceReferenceDate,
+                    settleDelay: StandardLayoutAvoidanceSettings.settleDelay)
+            }
+            guard let target else { continue }
             var settable: DarwinBoolean = false
             let attribute = current.size == target.size ? kAXPositionAttribute : kAXSizeAttribute
             guard AXUIElementIsAttributeSettable(window.axWindow, attribute as CFString,
@@ -482,7 +489,8 @@ final class AXWindowService {
                 activeStandardRetractions[id] = token
                 advanceStandardRetraction(id: id, token: token, start: current, target: target,
                     startedAt: ProcessInfo.processInfo.systemUptime,
-                    duration: WindowAvoidanceAnimationSettings.animationDuration)
+                    duration: WindowAvoidanceAnimationSettings.animationDuration,
+                    manual: manual)
                 continue
             }
             if setWindowFrame(window.axWindow, frame: target) {
@@ -502,9 +510,9 @@ final class AXWindowService {
 
     private func advanceStandardRetraction(id: String, token: UUID, start: CGRect,
                                            target: CGRect, startedAt: TimeInterval,
-                                           duration: TimeInterval) {
+                                           duration: TimeInterval, manual: Bool = false) {
         guard activeStandardRetractions[id] == token else { return }
-        guard StandardLayoutAvoidanceSettings.isEnabled,
+        guard (manual || StandardLayoutAvoidanceSettings.isEnabled),
               StandardLayoutAvoidanceSettings.isAnimated,
               NSEvent.pressedMouseButtons == 0,
               var reservation = standardAdjustedFrames[id],
@@ -535,7 +543,7 @@ final class AXWindowService {
             elapsed: ProcessInfo.processInfo.systemUptime - startedAt, duration: duration)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.advanceStandardRetraction(id: id, token: token, start: start,
-                target: target, startedAt: startedAt, duration: duration)
+                target: target, startedAt: startedAt, duration: duration, manual: manual)
         }
     }
 

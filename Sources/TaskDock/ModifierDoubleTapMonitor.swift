@@ -5,22 +5,27 @@ final class ModifierDoubleTapMonitor {
     private let settings: SettingsStore
     private let onDoubleTap: () -> Void
     private let onOptionHoldChanged: (Bool) -> Void
+    private let onLongOptionHold: () -> Void
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var lastTapAt: Date?
     private var modifierIsDown = false
     private var optionOnlyIsDown = false
     private var optionHoldIsActive = false
+    private var optionHoldTimer: Timer?
+    private var optionHoldConsumed = false
     var isOptionShortcutActive: Bool { optionHoldIsActive }
 
     init(
         settings: SettingsStore,
         onDoubleTap: @escaping () -> Void,
-        onOptionHoldChanged: @escaping (Bool) -> Void
+        onOptionHoldChanged: @escaping (Bool) -> Void,
+        onLongOptionHold: @escaping () -> Void
     ) {
         self.settings = settings
         self.onDoubleTap = onDoubleTap
         self.onOptionHoldChanged = onOptionHoldChanged
+        self.onLongOptionHold = onLongOptionHold
     }
 
     func start() {
@@ -40,6 +45,7 @@ final class ModifierDoubleTapMonitor {
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
         globalMonitor = nil
         localMonitor = nil
+        cancelLongOptionHold()
         if optionHoldIsActive { onOptionHoldChanged(false) }
         optionHoldIsActive = false
         optionOnlyIsDown = false
@@ -47,9 +53,16 @@ final class ModifierDoubleTapMonitor {
         modifierIsDown = false
     }
 
+    func cancelLongOptionHold() {
+        optionHoldTimer?.invalidate()
+        optionHoldTimer = nil
+        optionHoldConsumed = true
+    }
+
     private func handle(_ event: NSEvent) {
         if event.type == .keyDown {
             lastTapAt = nil
+            cancelLongOptionHold()
             return
         }
 
@@ -76,10 +89,22 @@ final class ModifierDoubleTapMonitor {
             if optionOnlyIsDown, !doubleTapped {
                 optionHoldIsActive = true
                 onOptionHoldChanged(true)
+                optionHoldConsumed = false
+                let timer = Timer(timeInterval: 0.6, repeats: false) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, self.optionOnlyIsDown, !self.optionHoldConsumed else { return }
+                        self.optionHoldConsumed = true
+                        self.optionHoldTimer = nil
+                        self.onLongOptionHold()
+                    }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                optionHoldTimer = timer
             } else if optionHoldIsActive {
                 optionHoldIsActive = false
                 onOptionHoldChanged(false)
             }
+            if !optionOnlyIsDown { cancelLongOptionHold() }
         }
     }
 

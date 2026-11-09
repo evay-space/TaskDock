@@ -48,7 +48,7 @@ struct StandardLayoutAvoidanceSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle("窗口避让", isOn: $enabled)
-            Text("可见窗口与任务栏持续重叠达到下方设定时间后，任务项底色临时加深；重叠消失后立即恢复。窗口避让默认仅调整当前焦点的最大化／半屏窗口。开启下方选项后，所有重叠窗口均避让，不要求焦点。")
+            Text("可见窗口与任务栏持续重叠达到下方设定时间后，任务项底色临时加深；重叠消失后立即恢复。自动避让默认只调整当前焦点的最大化／半屏窗口。长按 Option 0.6 秒可手动处理一次全部重叠窗口，即使自动避让已关闭。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Text("任务项加深延迟")
