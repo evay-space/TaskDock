@@ -105,6 +105,7 @@ final class TaskbarNativeContentView: NSView {
 /// SwiftUI only places this invisible anchor. AppKit owns the actual glass rendering.
 final class TaskbarGlassAnchorView: NSView {
     private var glass: NSView
+    private let frost: NSVisualEffectView?
 
     private static func makeGlass() -> NSView {
         if #available(macOS 26, *) {
@@ -122,8 +123,22 @@ final class TaskbarGlassAnchorView: NSView {
         }
     }
 
+    // Keep a full-strength behind-window blur when the clear glass layer is faded.
+    private static func makeFrost() -> NSVisualEffectView? {
+        guard #available(macOS 26, *) else { return nil }
+        let effect = NSVisualEffectView(frame: .zero)
+        effect.material = .underPageBackground
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.appearance = TaskDockAppearance.fixed
+        effect.wantsLayer = true
+        effect.layer?.masksToBounds = true
+        return effect
+    }
+
     override init(frame: NSRect) {
         glass = Self.makeGlass()
+        frost = Self.makeFrost()
         super.init(frame: frame)
     }
 
@@ -139,6 +154,7 @@ final class TaskbarGlassAnchorView: NSView {
         } else {
             glass.layer?.cornerRadius = cornerRadius
         }
+        frost?.layer?.cornerRadius = cornerRadius
         glass.alphaValue = CGFloat(min(1, max(0, opacity)))
         synchronizeGlass()
         needsLayout = true
@@ -154,12 +170,20 @@ final class TaskbarGlassAnchorView: NSView {
         synchronizeGlass()
     }
 
-    func detachGlass() { glass.removeFromSuperview() }
+    func detachGlass() {
+        glass.removeFromSuperview()
+        frost?.removeFromSuperview()
+    }
 
     private func synchronizeGlass() {
         guard let root = window?.contentView as? TaskbarNativeContentView else {
             detachGlass()
             return
+        }
+        if let frost {
+            root.attachGlass(frost)
+            frost.frame = convert(bounds, to: root)
+            frost.isHidden = isHiddenOrHasHiddenAncestor || bounds.isEmpty
         }
         root.attachGlass(glass)
         glass.frame = convert(bounds, to: root)

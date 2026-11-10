@@ -574,7 +574,7 @@ struct SettingsView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                Text("拖动实时预览并自动保存；0% 保留完整系统材质（推荐），100% 隐藏底座。")
+                Text("拖动实时预览并自动保存；越透明，玻璃底色越轻。macOS 26 及以上始终保留背景虚化。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
