@@ -32,3 +32,24 @@ struct TaskbarArrivalOrder {
         return (nextAppOrder, orderedWindowIDs)
     }
 }
+
+enum MinimalAppOrder {
+    static func reconcile(saved: [String], candidates: [String]) -> [String] {
+        var seen = Set<String>()
+        return (saved + candidates).filter { seen.insert($0).inserted }
+    }
+
+    static func visible(saved: [String], candidates: [String]) -> [String] {
+        let visible = Set(candidates)
+        return reconcile(saved: saved, candidates: candidates).filter { visible.contains($0) }
+    }
+
+    static func replacingVisible(saved: [String], with keys: [String]) -> [String] {
+        let ordered = reconcile(saved: [], candidates: keys)
+        let visible = Set(ordered)
+        var next = ordered.makeIterator()
+        return reconcile(saved: saved, candidates: ordered).map { key in
+            visible.contains(key) ? (next.next() ?? key) : key
+        }
+    }
+}

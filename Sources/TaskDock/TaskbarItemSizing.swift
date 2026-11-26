@@ -9,6 +9,7 @@ enum TaskbarItemWidthMode: String, CaseIterable, Identifiable {
 enum TaskbarItemSizing {
     static let defaultFixedWidth: CGFloat = 148
     static let minimumAdaptiveWidth: CGFloat = 80
+    static let maximumWidthRange: ClosedRange<CGFloat> = 80...320
 
     static func displayTitle(_ title: String, bundleIdentifier: String?) -> String {
         guard bundleIdentifier == "com.microsoft.edgemac" else { return title }
@@ -19,14 +20,32 @@ enum TaskbarItemSizing {
         let page = String(title[..<range.lowerBound])
         let suffix = String(title[range.upperBound...])
         guard !page.isEmpty, suffix.isEmpty || suffix.hasPrefix(" - ") else { return title }
-        return page + suffix
+        return page
     }
 
-    static func adaptiveWidth(title: String, fontSize: CGFloat, scale: CGFloat) -> CGFloat {
+    static func adaptiveWidth(title: String, fontSize: CGFloat, scale: CGFloat,
+                              maximumWidth: CGFloat = defaultFixedWidth,
+                              horizontalChrome: CGFloat = 48) -> CGFloat {
         let font = NSFont.systemFont(ofSize: fontSize * scale, weight: .medium)
         let textWidth = (title as NSString).size(withAttributes: [.font: font]).width
         // Icon, text gap, horizontal padding, and a little rounding clearance.
-        return min(defaultFixedWidth * scale, max(minimumAdaptiveWidth * scale, ceil(textWidth + 45 * scale)))
+        return min(maximumWidth * scale, max(minimumAdaptiveWidth * scale, ceil(textWidth + horizontalChrome * scale)))
+    }
+
+    static func downloadGroupTitle(_ count: Int) -> String { "下载  \(count)项" }
+
+    static func downloadGroupWidth(count: Int, fontSize: CGFloat, scale: CGFloat) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: max(9.5, fontSize) * scale, weight: .medium)
+        let title = downloadGroupTitle(count) as NSString
+        let horizontalChrome: CGFloat = 21 + 14 + 2 * 5 + 2 * 9
+        return ceil(title.size(withAttributes: [.font: font]).width + horizontalChrome * scale)
+    }
+
+    static func downloadWidth(title: String, isComplete: Bool, mode: TaskbarItemWidthMode,
+                              fontSize: CGFloat, scale: CGFloat) -> CGFloat {
+        let width = mode == .fixed ? defaultFixedWidth * scale
+            : adaptiveWidth(title: title, fontSize: fontSize, scale: scale, horizontalChrome: 45)
+        return isComplete ? max(width, 158 * scale) : width
     }
 
     static func groupFrames(widths: [[CGFloat]], spacing: CGFloat) -> [(minX: CGFloat, maxX: CGFloat)] {
@@ -50,6 +69,8 @@ struct TaskbarOverflowGroup {
 }
 
 enum TaskbarOverflowLayout {
+    static let fitTolerance: CGFloat = 0.5
+
     static func additionalCollapsedIDs(
         groups: [TaskbarOverflowGroup], precedingItemWidths: [CGFloat],
         availableWidth: CGFloat, spacing: CGFloat, leadingPadding: CGFloat = 0
@@ -59,7 +80,7 @@ enum TaskbarOverflowLayout {
         var requiredWidth = leadingPadding + precedingItemWidths.reduce(0, +)
             + groups.reduce(0) { $0 + ($1.isAlreadyCollapsed ? $1.collapsedWidth : $1.expandedWidth) }
             + CGFloat(max(itemCount - 1, 0)) * spacing
-        guard requiredWidth > availableWidth else { return [] }
+        guard requiredWidth > availableWidth + fitTolerance else { return [] }
 
         let candidates = groups.enumerated().filter {
             $0.element.windowCount > 1 && !$0.element.isAlreadyCollapsed
@@ -76,7 +97,7 @@ enum TaskbarOverflowLayout {
         for candidate in candidates {
             collapsed.insert(candidate.element.id)
             requiredWidth -= candidate.element.expandedWidth - candidate.element.collapsedWidth
-            if requiredWidth <= availableWidth { break }
+            if requiredWidth <= availableWidth + fitTolerance { break }
         }
         return collapsed
     }

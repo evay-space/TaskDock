@@ -2,7 +2,7 @@
 
 macOS 原生窗口切换工具：可在任务栏与 Dock 融合栏之间切换，直接定位到准确窗口。
 
-[下载最新版本](https://github.com/evay-spece/TaskDock/releases/latest)
+[下载最新版本](https://github.com/evay-space/TaskDock/releases/latest)
 
 ## 最新版本 1.5.2（Build 48）
 

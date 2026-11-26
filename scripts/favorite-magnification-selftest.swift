@@ -14,6 +14,165 @@ struct FavoriteMagnificationSelfTest {
         }
         let step = FavoriteMagnificationLayout.itemStep
         let gap = step - FavoriteMagnificationLayout.iconSize
+
+        let regularCenters = (0..<8).map { (CGFloat($0) + 0.5) * step }
+        for pointer in stride(from: regularCenters[0], through: regularCenters[7], by: 2) {
+            let shelf = FavoriteMagnificationLayout(count: 8, pointerX: pointer)
+            let minimal = FavoriteMagnificationLayout.linkedIconWave(
+                centers: regularCenters.map(Optional.some), widths: Array(repeating: FavoriteMagnificationLayout.iconSize, count: 8),
+                hoveredIndex: 3, pointerX: pointer, slotWidth: step, sizeScale: 1,
+                peakScale: FavoriteMagnificationLayout.maximumScale, leftClearance: 150, rightClearance: 150,
+                itemSlotWidths: Array(repeating: step, count: 8))
+            precondition(zip(shelf.scales, minimal.scales).allSatisfy { abs($0 - $1) < 0.0001 })
+            precondition(zip(shelf.offsets, minimal.offsets).allSatisfy { abs($0 - $1) < 0.0001 })
+        }
+        precondition(FavoriteMagnificationLayout.configuredScale(2, enabled: false, reducesMotion: false) == 1)
+        precondition(FavoriteMagnificationLayout.configuredScale(2, enabled: true, reducesMotion: true) == 1.35)
+
+        let separatorCenters: [CGFloat?] = [15, 49, 83]
+        let separatorWave = FavoriteMagnificationLayout.linkedIconWave(
+            centers: separatorCenters, widths: [26, 26, 26], hoveredIndex: 1, pointerX: 49,
+            slotWidth: step, sizeScale: 1, peakScale: 1.5, leftClearance: 100, rightClearance: 100,
+            itemSlotWidths: [step, step, step], separatorDistances: [1: 17, 2: 17])
+        let separatorCenter = 32 + separatorWave.separatorOffsets[1]!
+        let leftEdge = 15 + separatorWave.offsets[0] + 13 * separatorWave.scales[0]
+        let rightEdge = 49 + separatorWave.offsets[1] - 13 * separatorWave.scales[1]
+        let expectedClearance = FavoriteShelfSeparator.magnifiedIconGap + FavoriteShelfSeparator.width / 2
+        precondition(abs(separatorCenter - leftEdge - expectedClearance) < 0.0001)
+        precondition(abs(rightEdge - separatorCenter - expectedClearance) < 0.0001)
+
+        // Task items cut the wave even when the next icon is inside its nominal radius.
+        let segmentedCenters: [CGFloat?] = [18.5, 55.5, nil, 129.5, 166.5, 203.5, 240.5, 277.5, nil, 351.5]
+        func linkedWave(_ index: Int, pointer: CGFloat, peak: CGFloat = 1.4) -> LinkedFavoriteWave {
+            FavoriteMagnificationLayout.linkedIconWave(centers: segmentedCenters,
+                widths: Array(repeating: 28, count: segmentedCenters.count),
+                hoveredIndex: index, pointerX: pointer, slotWidth: 37,
+                sizeScale: 1, peakScale: peak, leftClearance: 42)
+        }
+        let leftWave = linkedWave(1, pointer: 55.5)
+        let left = leftWave.influences
+        precondition(left[1] == 1 && left[0] > 0 && left[0] < 1)
+        precondition(left.dropFirst(2).allSatisfy { $0 == 0 })
+        precondition(leftWave.offsets.dropFirst(2).allSatisfy { $0 == 0 })
+        precondition(leftWave.offsets[0] < 0 && leftWave.leadingOverflow > 0 && leftWave.edgeExtension > 0)
+        let rightWave = linkedWave(3, pointer: 129.5)
+        let right = rightWave.influences
+        precondition(right[3] == 1 && right[4] > right[5] && right[5] > right[6])
+        precondition(right[6] > 0 && right[7] == 0)
+        precondition(right.prefix(3).allSatisfy { $0 == 0 } && right[9] == 0)
+        precondition(rightWave.offsets.prefix(3).allSatisfy { $0 == 0 } && rightWave.offsets[9] == 0)
+        precondition(rightWave.scales[7] == 1)
+        let barrier = linkedWave(2, pointer: 92.5)
+        precondition(barrier.influences.allSatisfy { $0 == 0 } && barrier.edgeExtension == 0)
+        let between = linkedWave(4, pointer: 148).influences
+        precondition(between[3] == between[4] && between[3] > between[5])
+        let linkedCentered = linkedWave(5, pointer: 203.5)
+        let movedRight = linkedWave(5, pointer: 209.5)
+        precondition(movedRight.offsets[5] < linkedCentered.offsets[5], "The icon moves opposite the pointer")
+        precondition(linkedWave(5, pointer: 203.5, peak: 1).edgeExtension == 0)
+
+        let yieldingCenters: [CGFloat?] = [15, nil, 151, 181, nil, 317]
+        func yieldingWave(pointer: CGFloat) -> LinkedFavoriteWave {
+            FavoriteMagnificationLayout.linkedIconWave(centers: yieldingCenters,
+                widths: [28, 0, 28, 28, 0, 28], hoveredIndex: 2, pointerX: pointer,
+                slotWidth: 30, sizeScale: 1, peakScale: 1.4, leftClearance: 42,
+                rightClearance: 42, yieldingTaskSlots: [1, 4])
+        }
+        let yieldingRight = yieldingWave(pointer: 151)
+        precondition(yieldingRight.scales[2] > 1.3 && yieldingRight.offsets[4] > 0)
+        precondition(yieldingRight.offsets[4] == yieldingRight.offsets[5])
+        precondition(yieldingRight.scales[4] == 1 && yieldingRight.scales[5] == 1)
+        let yieldingLeft = yieldingWave(pointer: 181)
+        precondition(yieldingLeft.offsets[1] < 0 && yieldingLeft.offsets[1] == yieldingLeft.offsets[0])
+        precondition(yieldingLeft.scales[0] == 1 && yieldingLeft.scales[1] == 1)
+
+        for bounds: ClosedRange<CGFloat> in [40...200, 32...216, 48...192] {
+            let insets = FavoriteMagnificationLayout.edgeInsets(for: bounds, canvasWidth: 240, margin: 6)
+            precondition(bounds.lowerBound - insets.width == 6)
+            precondition(240 - insets.height - bounds.upperBound == 6)
+        }
+        let folderReveal = FavoriteMagnificationLayout.trailingReveal(center: 480, iconWidth: 26,
+            scale: 1.4, offset: 26, viewportEnd: 512, clearance: 42)
+        precondition(abs(folderReveal - 12.2) < 0.0001)
+        precondition(FavoriteMagnificationLayout.trailingReveal(center: 530, iconWidth: 26,
+            scale: 1.4, offset: 26, viewportEnd: 512, clearance: 42) == 0)
+        let utilityWave = FavoriteMagnificationLayout.linkedIconWave(
+            centers: [15, 45, 81, 119], widths: [28, 28, 27, 30],
+            hoveredIndex: 3, pointerX: 119, slotWidth: 30,
+            sizeScale: 1, peakScale: 1.4, leftClearance: 42,
+            rightClearance: 42, lastSlotWidth: 40)
+        precondition(utilityWave.scales[3] > utilityWave.scales[2] && utilityWave.scales[2] > 1)
+        precondition(utilityWave.scales[1] > 1 && utilityWave.edgeExtension > 0)
+        let inlineCenters: [CGFloat?] = [15, 45, 77, 115]
+        var previousInlineOffsets: [CGFloat]?
+        for pointer in stride(from: CGFloat(45), through: 115, by: 0.5) {
+            let hoveredIndex = pointer < 60 ? 1 : pointer < 94 ? 2 : 3
+            let wave = FavoriteMagnificationLayout.linkedIconWave(centers: inlineCenters,
+                widths: [28, 26, 27, 30], hoveredIndex: hoveredIndex, pointerX: pointer,
+                slotWidth: 30, sizeScale: 1, peakScale: 1.4, leftClearance: 42,
+                rightClearance: 42, lastSlotWidth: 40, itemSlotWidths: [30, 30, 32, 40])
+            precondition(wave.scales[1] > 1 && wave.scales[2] > 1 && wave.scales[3] > 1)
+            if let previousInlineOffsets {
+                precondition(zip(previousInlineOffsets, wave.offsets).allSatisfy { abs($0 - $1) < 1 })
+            }
+            previousInlineOffsets = wave.offsets
+        }
+        let separatedUtilities = FavoriteMagnificationLayout.linkedIconWave(
+            centers: [15, 45, nil, 81, 119], widths: [28, 28, 0, 27, 30],
+            hoveredIndex: 4, pointerX: 119, slotWidth: 30,
+            sizeScale: 1, peakScale: 1.4, leftClearance: 42,
+            rightClearance: 42, lastSlotWidth: 40)
+        precondition(separatedUtilities.scales.prefix(3).allSatisfy { $0 == 1 })
+        precondition(separatedUtilities.scales[3] > 1 && separatedUtilities.scales[4] > 1)
+
+        let mixedWave = FavoriteMagnificationLayout.linkedIconWave(
+            centers: [15, 91, 167, 243, nil, 355], widths: [28, 120, 28, 120, 0, 28],
+            hoveredIndex: 1, pointerX: 91, slotWidth: 30,
+            sizeScale: 1, peakScale: 1.4, leftClearance: 42,
+            itemSlotWidths: [30, 122, 30, 122, 0, 30])
+        precondition(mixedWave.scales[1] > mixedWave.scales[0] && mixedWave.scales[0] > 1)
+        precondition(mixedWave.scales[2] > 1 && mixedWave.scales[5] == 1)
+        let grownGap = 76 + mixedWave.offsets[2] - mixedWave.offsets[1]
+            - (120 * mixedWave.scales[1] + 28 * mixedWave.scales[2]) / 2
+        let mixedGapGrowth = (mixedWave.scales[1] + mixedWave.scales[2] - 2) / 2
+            * FavoriteMagnificationLayout.gapGrowthPerScale
+        precondition(abs(grownGap - 2 - mixedGapGrowth) < 0.0001)
+
+        for count in 1...12 {
+            for leftBarrier in [false, true] {
+                let slotWidth: CGFloat = 30
+                let iconCenters = (0..<count).map { (CGFloat($0) + 0.5) * slotWidth }
+                let centers: [CGFloat?] = (leftBarrier ? [nil] : []) + iconCenters.map(Optional.some) + [nil]
+                let icons = centers.indices.filter { centers[$0] != nil }
+                let widths = centers.indices.map { $0.isMultiple(of: 2) ? CGFloat(28) : 26 }
+                var previousOffsets: [CGFloat]?
+                for x in stride(from: CGFloat(0), to: CGFloat(count) * slotWidth, by: 0.5) {
+                    let index = icons[Int(x / slotWidth)]
+                    let wave = FavoriteMagnificationLayout.linkedIconWave(centers: centers, widths: widths,
+                        hoveredIndex: index, pointerX: x, slotWidth: slotWidth,
+                        sizeScale: 1, peakScale: 1.4, leftClearance: 42)
+                    if let previousOffsets {
+                        precondition(zip(previousOffsets, wave.offsets).allSatisfy { abs($0 - $1) < 2 },
+                            "An icon entering or leaving the wave must not jump")
+                    }
+                    previousOffsets = wave.offsets
+                    for (left, right) in zip(icons, icons.dropFirst()) {
+                        let gap = slotWidth + wave.offsets[right] - wave.offsets[left]
+                            - (widths[left] * wave.scales[left] + widths[right] * wave.scales[right]) / 2
+                        let idleGap = slotWidth - (widths[left] + widths[right]) / 2
+                        let gapGrowth = (wave.scales[left] + wave.scales[right] - 2) / 2
+                            * FavoriteMagnificationLayout.gapGrowthPerScale
+                        precondition(abs(gap - idleGap - gapGrowth) < 0.0001,
+                            "Spacing must grow by the same amount as on the shelf")
+                    }
+                    let last = icons[icons.count - 1]
+                    let rightEdge = iconCenters[count - 1] + wave.offsets[last] + widths[last] * wave.scales[last] / 2
+                    precondition(rightEdge <= CGFloat(count) * slotWidth + 0.001)
+                }
+            }
+        }
+
+
         for exiting in [false, true] {
             let duration = exiting ? FavoriteMagnificationTiming.exitDuration : FavoriteMagnificationTiming.entryDuration
             precondition(FavoriteMagnificationTiming.progress(elapsed: 0, exiting: exiting) == 0)
@@ -189,7 +348,7 @@ struct FavoriteMagnificationSelfTest {
             let centerSpacing = step + separated.offsets[index] - separated.offsets[index - 1]
             let previousWidth = index - 1 == 4 ? 1 : 26 * separated.scales[index - 1]
             let currentWidth = index == 4 ? 1 : 26 * separated.scales[index]
-            precondition(centerSpacing + 0.001 >= (previousWidth + currentWidth) / 2 + 3)
+            precondition(centerSpacing + 0.001 >= (previousWidth + currentWidth) / 2 + FavoriteShelfSeparator.magnifiedIconGap)
         }
         for pointer in stride(from: CGFloat(2 * step), through: 8 * step, by: 0.25) {
             let left = FavoriteMagnificationLayout(

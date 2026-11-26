@@ -173,12 +173,12 @@ struct FavoriteShelfInteractionView: NSViewRepresentable {
                 grabOffset = .zero
             }
             if let id = pressedID {
-                let timer = Timer(timeInterval: 0.55, repeats: false) { [weak self] _ in
+                let timer = Timer(timeInterval: FavoriteShelfInteractionMetrics.holdDuration, repeats: false) { [weak self] _ in
                     guard let self, self.pressedID == id, !self.dragging,
                           NSEvent.pressedMouseButtons & 1 != 0,
                           let window = self.window else { return }
                     let point = self.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-                    guard hypot(point.x - self.startPoint.x, point.y - self.startPoint.y) < 8,
+                    guard hypot(point.x - self.startPoint.x, point.y - self.startPoint.y) < FavoriteShelfInteractionMetrics.holdMovementTolerance,
                           self.itemAt?(point) == id else { return }
                     self.pressedID = nil
                     self.longPressTimer = nil
@@ -191,14 +191,14 @@ struct FavoriteShelfInteractionView: NSViewRepresentable {
 
         override func mouseDragged(with event: NSEvent) {
             let location = convert(event.locationInWindow, from: nil)
-            if hypot(location.x - startPoint.x, location.y - startPoint.y) >= 8 {
+            if hypot(location.x - startPoint.x, location.y - startPoint.y) >= FavoriteShelfInteractionMetrics.holdMovementTolerance {
                 longPressTimer?.invalidate()
                 longPressTimer = nil
             }
             guard let id = pressedID, canDragItem?(id) == true,
                   !event.modifierFlags.contains(.option) else { return }
             let translation = CGSize(width: location.x - startPoint.x, height: location.y - startPoint.y)
-            guard dragging || hypot(translation.width, translation.height) >= 12 else { return }
+            guard dragging || hypot(translation.width, translation.height) >= FavoriteShelfInteractionMetrics.dragDistance else { return }
             let justStarted = !dragging
             if justStarted {
                 dragging = true

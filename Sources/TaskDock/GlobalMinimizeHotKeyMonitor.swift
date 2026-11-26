@@ -1,22 +1,25 @@
 import Carbon
 import AppKit
 
-/// Keeps the configured minimize shortcut available while another app is focused.
+/// Registers a global shortcut and handles key release and auto-repeat.
 @MainActor
 final class GlobalMinimizeHotKeyMonitor {
     private let signature: OSType = 0x54444D4E // TDMN
+    private let id: UInt32
+    private var registeredKeyCode: UInt32?
     private let onTrigger: () -> Void
     private var eventHandler: EventHandlerRef?
     private var hotKey: EventHotKeyRef?
     private var isPressed = false
     private var releaseTimer: Timer?
 
-    init(onTrigger: @escaping () -> Void) {
+    init(id: UInt32 = 1, onTrigger: @escaping () -> Void) {
+        self.id = id
         self.onTrigger = onTrigger
     }
 
     @discardableResult
-    func start() -> Bool {
+    func start(keyCode: UInt32, modifiers: UInt32) -> Bool {
         stop()
         var eventTypes = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
@@ -36,11 +39,12 @@ final class GlobalMinimizeHotKeyMonitor {
                     nil,
                     &hotKeyID
                 )
-                guard result == noErr, hotKeyID.signature == 0x54444D4E, hotKeyID.id == 1 else {
+                guard result == noErr, hotKeyID.signature == 0x54444D4E else {
                     return OSStatus(eventNotHandledErr)
                 }
                 let monitor = Unmanaged<GlobalMinimizeHotKeyMonitor>
                     .fromOpaque(userData).takeUnretainedValue()
+                guard hotKeyID.id == monitor.id else { return OSStatus(eventNotHandledErr) }
                 let kind = GetEventKind(event)
                 Task { @MainActor in monitor.handle(kind: kind) }
                 return noErr
@@ -53,21 +57,21 @@ final class GlobalMinimizeHotKeyMonitor {
         guard status == noErr else { return false }
 
         var registeredHotKey: EventHotKeyRef?
-        let hotKeyID = EventHotKeyID(signature: signature, id: 1)
-        let shortcut = MinimizeShortcutSettings.current()
+        let hotKeyID = EventHotKeyID(signature: signature, id: id)
         guard RegisterEventHotKey(
-            shortcut.keyCode, shortcut.modifiers, hotKeyID,
+            keyCode, modifiers, hotKeyID,
             GetApplicationEventTarget(), 0, &registeredHotKey
         ) == noErr, let registeredHotKey else {
             stop()
             return false
         }
+        registeredKeyCode = keyCode
         hotKey = registeredHotKey
         return true
     }
 
     private func handle(kind: UInt32) {
-        guard hotKey != nil else { return }
+        guard hotKey != nil, let registeredKeyCode else { return }
         if kind == UInt32(kEventHotKeyReleased) {
             isPressed = false
             releaseTimer?.invalidate()
@@ -78,8 +82,8 @@ final class GlobalMinimizeHotKeyMonitor {
             let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    // Carbon can miss release when Option is released before D.
-                    if !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(kVK_ANSI_D)) {
+                    // Carbon can miss release when Option is released before the shortcut key.
+                    if !CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(registeredKeyCode)) {
                         self.isPressed = false
                         self.releaseTimer?.invalidate()
                         self.releaseTimer = nil
@@ -97,6 +101,7 @@ final class GlobalMinimizeHotKeyMonitor {
         releaseTimer = nil
         if let hotKey { UnregisterEventHotKey(hotKey) }
         hotKey = nil
+        registeredKeyCode = nil
         if let eventHandler { RemoveEventHandler(eventHandler) }
         eventHandler = nil
         isPressed = false

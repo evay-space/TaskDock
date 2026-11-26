@@ -27,6 +27,15 @@ struct TaskbarArrivalOrderSelfTest {
         )
         precondition(returned.apps == ["A", "C", "B"])
         precondition(returned.windows == ["a1", "c1", "b2"])
+        let mixed = MinimalAppOrder.replacingVisible(saved: ["Finder", "Closed", "Mail", "Browser"],
+            with: ["Mail", "Finder", "Browser"])
+        precondition(mixed == ["Mail", "Closed", "Finder", "Browser"])
+        precondition(MinimalAppOrder.visible(saved: mixed,
+            candidates: ["Finder", "Browser", "Mail", "Mail"]) == ["Mail", "Finder", "Browser"])
+        precondition(MinimalAppOrder.visible(saved: mixed,
+            candidates: ["Finder", "Browser", "Closed", "New"]) == ["Closed", "Finder", "Browser", "New"])
+        precondition(MinimalAppOrder.replacingVisible(saved: mixed,
+            with: ["Mail", "New", "Finder", "Browser"]) == ["Mail", "Closed", "New", "Finder", "Browser"])
         print("TASKBAR_ARRIVAL_ORDER_OK")
     }
 }

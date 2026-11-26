@@ -56,8 +56,23 @@ enum MinimizeShortcutSettings {
     }
 }
 
+enum LayoutSwitchShortcutSettings {
+    static let keyCodeKey = "taskdock.layoutSwitchKeyCode"
+    static let modifiersKey = "taskdock.layoutSwitchModifiers"
+    static let characterKey = "taskdock.layoutSwitchCharacter"
+    static let defaultKeyCode = Int(kVK_ANSI_H)
+    static let defaultModifiers = Int(cmdKey | shiftKey | optionKey | controlKey)
+
+    static func current(defaults: UserDefaults = .standard) -> (keyCode: UInt32, modifiers: UInt32) {
+        let code = defaults.object(forKey: keyCodeKey) as? Int ?? defaultKeyCode
+        let flags = defaults.object(forKey: modifiersKey) as? Int ?? defaultModifiers
+        return (UInt32(clamping: code), UInt32(clamping: flags))
+    }
+}
+
 final class ShortcutCaptureButton: NSButton {
     var onCapture: ((Int, Int, String) -> Void)?
+    var isAvailable: ((Int, Int) -> Bool)?
     private var recording = false
     private var previousTitle = ""
 
@@ -86,7 +101,7 @@ final class ShortcutCaptureButton: NSButton {
         }
         guard !MinimizeShortcutSettings.conflictsWithTaskbarShortcut(
             keyCode: event.keyCode, modifiers: modifiers
-        ) else {
+        ), isAvailable?(Int(event.keyCode), Int(modifiers)) ?? true else {
             NSSound.beep()
             return
         }
@@ -95,10 +110,12 @@ final class ShortcutCaptureButton: NSButton {
     }
 }
 
-struct MinimizeShortcutRecorder: NSViewRepresentable {
+struct GlobalShortcutRecorder: NSViewRepresentable {
     @Binding var keyCode: Int
     @Binding var modifiers: Int
     @Binding var character: String
+    var label = "录制最小化全部窗口快捷键"
+    var isAvailable: (Int, Int) -> Bool = { _, _ in true }
 
     func makeNSView(context: Context) -> ShortcutCaptureButton {
         let button = ShortcutCaptureButton()
@@ -116,6 +133,7 @@ struct MinimizeShortcutRecorder: NSViewRepresentable {
             modifiers = flags
             character = key
         }
-        button.setAccessibilityLabel("录制最小化全部窗口快捷键")
+        button.isAvailable = isAvailable
+        button.setAccessibilityLabel(label)
     }
 }

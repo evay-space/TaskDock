@@ -4,13 +4,20 @@ import AppKit
 struct TaskbarItemSizingSelfTest {
     static func main() {
         precondition(TaskbarItemWidthMode(rawValue: "adaptive") == .adaptive)
+        let capped = TaskbarItemSizing.adaptiveWidth(title: String(repeating: "长标题", count: 30),
+            fontSize: 12, scale: 1.5, maximumWidth: 240)
+        precondition(capped == 360)
+        precondition(TaskbarItemSizing.adaptiveWidth(title: "微信", fontSize: 12, scale: 1,
+            maximumWidth: 240) == TaskbarItemSizing.minimumAdaptiveWidth)
         let short = TaskbarItemSizing.adaptiveWidth(title: "微信", fontSize: 12, scale: 1)
         let long = TaskbarItemSizing.adaptiveWidth(title: String(repeating: "长标题", count: 30), fontSize: 12, scale: 1)
         precondition(short == 80 && long == TaskbarItemSizing.defaultFixedWidth)
         precondition(TaskbarItemSizing.adaptiveWidth(title: String(repeating: "长标题", count: 30), fontSize: 12, scale: 2) == 296)
         precondition(TaskbarItemSizing.adaptiveWidth(title: "微信", fontSize: 12, scale: 2) == 2 * short)
         precondition(TaskbarItemSizing.adaptiveWidth(title: "", fontSize: 12, scale: 1) == 80)
-        precondition(TaskbarItemSizing.displayTitle("页面 - Microsoft Edge - 用户", bundleIdentifier: "com.microsoft.edgemac") == "页面 - 用户")
+        precondition(TaskbarItemSizing.displayTitle("页面 - Microsoft Edge - 用户", bundleIdentifier: "com.microsoft.edgemac") == "页面")
+        precondition(TaskbarItemSizing.displayTitle("页面 - 工作 - Microsoft Edge - 用户", bundleIdentifier: "com.microsoft.edgemac") == "页面 - 工作")
+        precondition(TaskbarItemSizing.displayTitle("页面 - Microsoft Edge", bundleIdentifier: "com.microsoft.edgemac") == "页面")
         precondition(TaskbarItemSizing.displayTitle("Microsoft Edge", bundleIdentifier: "com.microsoft.edgemac") == "浏览器窗口")
         precondition(TaskbarItemSizing.displayTitle("文件 - Microsoft Edge", bundleIdentifier: "other") == "文件 - Microsoft Edge")
         let frames = TaskbarItemSizing.groupFrames(widths: [[72, 220], [100], [148, 88]], spacing: 4)
@@ -33,6 +40,8 @@ struct TaskbarItemSizingSelfTest {
         }
         precondition(collapsed(0) == ["focused", "other"])
         precondition(collapsed(760).isEmpty)
+        precondition(collapsed(755.75).isEmpty, "Sub-point rounding must not collapse a window group")
+        precondition(collapsed(755) == ["other"])
         precondition(collapsed(700) == ["other"])
         precondition(collapsed(520) == ["focused", "other"])
         precondition(collapsed(760, preceding: [120]) == ["other"])

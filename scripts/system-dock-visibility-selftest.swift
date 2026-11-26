@@ -18,6 +18,7 @@ struct SystemDockVisibilitySelfTest {
         let (domain, dock, task, cleanup) = testDefaults()
         defer { cleanup() }
         dock.set(false, forKey: "autohide")
+        dock.set(58, forKey: "tilesize")
         var restarts = 0
         let controller = SystemDockVisibilityController(
             domain: domain,
@@ -29,11 +30,13 @@ struct SystemDockVisibilitySelfTest {
         controller.synchronize(hidden: true)
         precondition(dock.bool(forKey: "autohide"))
         precondition(dock.double(forKey: "autohide-delay") == 1000)
+        precondition(dock.integer(forKey: "tilesize") == 16)
         precondition(task.dictionary(forKey: "taskdock.originalSystemDockPreferences") != nil)
         controller.synchronize(hidden: true)
         precondition(restarts == 1)
 
         controller.synchronize(hidden: false)
+        precondition(dock.integer(forKey: "tilesize") == 58)
         precondition(!dock.bool(forKey: "autohide"))
         precondition(dock.object(forKey: "autohide-delay") == nil)
         precondition(task.dictionary(forKey: "taskdock.originalSystemDockPreferences") != nil)
@@ -115,6 +118,7 @@ struct SystemDockVisibilitySelfTest {
         controller.synchronize(hidden: true)
         precondition(dock.double(forKey: "autohide-delay") == 1000)
         controller.restore() // Taskbar is temporarily hidden.
+        precondition(dock.object(forKey: "tilesize") == nil)
         precondition(dock.bool(forKey: "autohide"))
         precondition(dock.double(forKey: "autohide-delay") == 0.25)
         precondition(task.dictionary(forKey: "taskdock.originalSystemDockPreferences") == nil)
@@ -175,7 +179,7 @@ struct SystemDockVisibilitySelfTest {
         precondition(restarts == 3, "Matching inset restarted the Dock")
         controller.synchronize(hidden: true)
         precondition(dock.string(forKey: "orientation") == "left")
-        precondition(dock.double(forKey: "tilesize") == 72)
+        precondition(dock.double(forKey: "tilesize") == 16)
         precondition(dock.bool(forKey: "autohide"))
         precondition(dock.double(forKey: "autohide-delay") == 1000)
         controller.restore()

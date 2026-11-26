@@ -12,17 +12,21 @@ enum TaskItemHighlightStyle: String, CaseIterable, Identifiable {
 
 enum TaskDockLayoutMode: String, CaseIterable, Identifiable {
     case taskbar
+    case minimal
     case dockCompanion
 
+    var isTaskbar: Bool { self != .dockCompanion }
     var id: String { rawValue }
     var label: String {
         switch self {
+        case .minimal: return "极简模式"
         case .taskbar: return "任务栏"
         case .dockCompanion: return "Dock 融合"
         }
     }
     var systemImage: String {
         switch self {
+        case .minimal: return "rectangle.compress.vertical"
         case .taskbar: return "rectangle.bottomthird.inset.filled"
         case .dockCompanion: return "dock.rectangle"
         }
@@ -84,6 +88,7 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(taskbarBackgroundTransparency, forKey: taskbarBackgroundTransparencyKey) }
     }
     @Published var taskbarItemWidthMode: TaskbarItemWidthMode { didSet { save() } }
+    @Published var taskbarItemMaximumWidth: CGFloat { didSet { save() } }
     @Published var taskbarItemFontSize: CGFloat { didSet { save() } }
     @Published var favoriteMagnificationEnabled: Bool { didSet { save() } }
     @Published var favoriteMagnificationScale: CGFloat {
@@ -101,14 +106,33 @@ final class SettingsStore: ObservableObject {
     @Published var dockCompanionOverlayEnabled: Bool { didSet { save() } }
     @Published var toggleModifier: TaskbarToggleModifier { didSet { save() } }
     @Published private(set) var appOrder: [String] { didSet { save() } }
+    @Published private(set) var minimalAppOrder: [String] {
+        didSet { defaults.set(minimalAppOrder, forKey: minimalAppOrderKey) }
+    }
     @Published private(set) var favoriteApps: [FavoriteApp] { didSet { save(); favoritesDidChange() } }
     @Published private(set) var recentApps: [FavoriteApp] { didSet { save() } }
+    @Published private(set) var singleIconAppIDs: Set<String> {
+        didSet { defaults.set(singleIconAppIDs.sorted(), forKey: singleIconAppIDsKey) }
+    }
+    @Published private(set) var appGroupPins: [FavoriteApp] {
+        didSet { defaults.set(try? JSONEncoder().encode(appGroupPins), forKey: appGroupPinsKey) }
+    }
     @Published private(set) var favoriteFolders: [FavoriteFolder] { didSet { save(); favoritesDidChange() } }
     @Published private(set) var dockFavoritesSyncEnabled: Bool
     @Published private(set) var dockTransientApps: [FavoriteApp] = []
     @Published var dockFavoritesSyncError: String?
     var onFavoritesChanged: (() -> Void)?
     private var importingDockFavorites = false
+    private var recentAppOpenTimes: [String: Double] = [:]
+    @Published private var recentAppCloseTimes: [String: Double] = [:]
+    private let recentAppCloseTimesKey = "taskdock.recentAppCloseTimes"
+    var recentAppsByClosingTime: [FavoriteApp] {
+        recentApps.enumerated().sorted { left, right in
+            let leftTime = recentAppCloseTimes[left.element.id] ?? 0
+            let rightTime = recentAppCloseTimes[right.element.id] ?? 0
+            return leftTime == rightTime ? left.offset < right.offset : leftTime > rightTime
+        }.map(\.element)
+    }
     private var taskbarArrivalOrder = TaskbarArrivalOrder()
     private var taskbarWindowOrderIDs: [String] = []
 
@@ -123,6 +147,7 @@ final class SettingsStore: ObservableObject {
     private let taskbarHeightKey = "taskdock.taskbarHeight"
     private let taskbarBackgroundTransparencyKey = "taskdock.taskbarBackgroundTransparency"
     private let taskbarItemWidthModeKey = "taskdock.taskbarItemWidthMode"
+    private let taskbarItemMaximumWidthKey = "taskdock.taskbarItemMaximumWidth"
     private let taskbarItemFontSizeKey = "taskdock.taskbarItemFontSize"
     private let favoriteMagnificationEnabledKey = "taskdock.favoriteMagnificationEnabled"
     private let favoriteMagnificationScaleKey = "taskdock.favoriteMagnificationScale"
@@ -138,8 +163,12 @@ final class SettingsStore: ObservableObject {
     private let dockCompanionOverlayEnabledKey = "taskdock.dockCompanionOverlayEnabled"
     private let toggleModifierKey = "taskdock.toggleModifier"
     private let appOrderKey = "taskdock.appOrder"
+    private let minimalAppOrderKey = "taskdock.minimalAppOrder"
     private let favoriteAppsKey = "taskdock.favoriteApps"
     private let recentAppsKey = "taskdock.recentApps"
+    private let recentAppOpenTimesKey = "taskdock.recentAppOpenTimes"
+    private let appGroupPinsKey = "taskdock.appGroupPins"
+    private let singleIconAppIDsKey = "taskdock.singleIconAppIDs"
     private let favoriteFoldersKey = "taskdock.favoriteFolders"
     private let dockFavoritesSyncKey = "taskdock.dockFavoritesSyncEnabled"
     private let independentFavoriteAppsKey = "taskdock.independentFavoriteApps"
@@ -191,6 +220,10 @@ final class SettingsStore: ObservableObject {
         taskbarBackgroundTransparency = savedBackgroundTransparency.isFinite
             ? min(max(savedBackgroundTransparency, 0), 1) : 0
         taskbarItemWidthMode = TaskbarItemWidthMode(rawValue: defaults.string(forKey: taskbarItemWidthModeKey) ?? "adaptive") ?? .adaptive
+        let widthRange = TaskbarItemSizing.maximumWidthRange
+        let storedWidth = defaults.object(forKey: taskbarItemMaximumWidthKey) as? Double
+        let maximumWidth = storedWidth.flatMap { $0.isFinite ? CGFloat($0) : nil } ?? TaskbarItemSizing.defaultFixedWidth
+        taskbarItemMaximumWidth = min(widthRange.upperBound, max(widthRange.lowerBound, maximumWidth))
         let savedFontSize = defaults.object(forKey: taskbarItemFontSizeKey) as? Double ?? Double(Self.defaultTaskbarItemFontSize)
         taskbarItemFontSize = Self.taskbarItemFontSizes.min {
             abs($0 - CGFloat(savedFontSize)) < abs($1 - CGFloat(savedFontSize))
@@ -222,6 +255,8 @@ final class SettingsStore: ObservableObject {
         appOrder = (defaults.stringArray(forKey: appOrderKey) ?? []).filter {
             seenAppKeys.insert($0).inserted
         }
+        minimalAppOrder = MinimalAppOrder.reconcile(saved: defaults.stringArray(forKey: minimalAppOrderKey) ?? [],
+            candidates: [])
         if let data = defaults.data(forKey: favoriteAppsKey),
            let decoded = try? JSONDecoder().decode([FavoriteApp].self, from: data) {
             var seenFavoriteIDs = Set<String>()
@@ -236,6 +271,13 @@ final class SettingsStore: ObservableObject {
         } else {
             recentApps = []
         }
+        singleIconAppIDs = Set(defaults.stringArray(forKey: singleIconAppIDsKey) ?? [])
+        recentAppOpenTimes = defaults.dictionary(forKey: recentAppOpenTimesKey) as? [String: Double] ?? [:]
+        recentAppCloseTimes = defaults.dictionary(forKey: recentAppCloseTimesKey) as? [String: Double] ?? [:]
+        let savedPins = defaults.data(forKey: appGroupPinsKey)
+            .flatMap { try? JSONDecoder().decode([FavoriteApp].self, from: $0) } ?? []
+        var seenPinIDs = Set<String>()
+        appGroupPins = savedPins.filter { seenPinIDs.insert($0.id).inserted }
         if let data = defaults.data(forKey: favoriteFoldersKey),
            let decoded = try? JSONDecoder().decode([FavoriteFolder].self, from: data) {
             var seenPaths = Set<String>()
@@ -294,6 +336,28 @@ final class SettingsStore: ObservableObject {
         appOrder = nextOrder
     }
 
+    func taskbarWindowWidth(title: String, scale: CGFloat) -> CGFloat {
+        if taskbarItemWidthMode == .fixed { return taskbarItemMaximumWidth * scale }
+        return TaskbarItemSizing.adaptiveWidth(title: title, fontSize: taskbarItemFontSize, scale: scale,
+            maximumWidth: taskbarItemMaximumWidth)
+    }
+
+    func orderedMinimalAppKeys(with runningKeys: [String]) -> [String] {
+        MinimalAppOrder.visible(saved: minimalAppOrder,
+            candidates: displayedFavoriteApps.map(\.id) + runningKeys)
+    }
+
+    func reconcileMinimalAppOrder(with runningKeys: [String]) {
+        let next = MinimalAppOrder.reconcile(saved: minimalAppOrder,
+            candidates: displayedFavoriteApps.map(\.id) + runningKeys)
+        if next != minimalAppOrder { minimalAppOrder = next }
+    }
+
+    func applyMinimalVisibleAppOrder(_ keys: [String]) {
+        let next = MinimalAppOrder.replacingVisible(saved: minimalAppOrder, with: keys)
+        if next != minimalAppOrder { minimalAppOrder = next }
+    }
+
     func isFavorite(_ appKey: String) -> Bool {
         favoriteApps.contains { $0.id == appKey }
     }
@@ -340,6 +404,7 @@ final class SettingsStore: ObservableObject {
     }
 
     func toggleFavorite(for window: WindowModel) {
+        guard !window.isTrashWindow else { return }
         if let index = favoriteApps.firstIndex(where: { $0.id == window.appKey }) {
             favoriteApps.remove(at: index)
             return
@@ -389,10 +454,72 @@ final class SettingsStore: ObservableObject {
         favoriteApps.removeAll { $0.id == favorite.id }
     }
 
-    func recordRecentApp(_ app: FavoriteApp) {
-        let updated = [app] + recentApps.filter { $0.id != app.id }
+    func recordRecentApp(_ app: FavoriteApp, openedAt: Date = Date()) {
+        let timestamp = openedAt.timeIntervalSince1970
+        if let prior = recentAppOpenTimes[app.id], prior > timestamp { return }
+        recentAppOpenTimes[app.id] = timestamp
+        var updated = recentApps.filter { $0.id != app.id }
+        let insertion = updated.firstIndex { entry in
+            (recentAppOpenTimes[entry.id] ?? 0) <= timestamp
+        } ?? updated.endIndex
+        updated.insert(app, at: insertion)
         let limited = Array(updated.prefix(Self.recentAppHistoryLimit))
+        let history = Set(limited.map(\.id))
+        recentAppOpenTimes = recentAppOpenTimes.filter { history.contains($0.key) }
+        defaults.set(recentAppOpenTimes, forKey: recentAppOpenTimesKey)
+        let closeTimes = recentAppCloseTimes.filter { history.contains($0.key) }
+        if closeTimes != recentAppCloseTimes {
+            recentAppCloseTimes = closeTimes
+            defaults.set(closeTimes, forKey: recentAppCloseTimesKey)
+        }
         if limited != recentApps { recentApps = limited }
+    }
+
+    func recordRecentAppClosure(_ app: FavoriteApp, at date: Date = Date()) {
+        if !recentApps.contains(where: { $0.id == app.id }) { recordRecentApp(app, openedAt: date) }
+        recentAppCloseTimes[app.id] = date.timeIntervalSince1970
+        defaults.set(recentAppCloseTimes, forKey: recentAppCloseTimesKey)
+    }
+
+    func moveAppGroupPin(_ id: String, to targetID: String) {
+        guard id != targetID,
+              let source = appGroupPins.firstIndex(where: { $0.id == id }),
+              let destination = appGroupPins.firstIndex(where: { $0.id == targetID }) else { return }
+        var pins = appGroupPins
+        let app = pins.remove(at: source)
+        pins.insert(app, at: destination)
+        appGroupPins = pins
+    }
+
+    func removesOverlapOnOptionHold(in mode: TaskDockLayoutMode) -> Bool {
+        guard mode.isTaskbar else { return false }
+        let key = mode == .minimal ? Self.minimalOptionAvoidanceKey : Self.taskbarOptionAvoidanceKey
+        return defaults.object(forKey: key) as? Bool ?? true
+    }
+
+    static let minimalOptionAvoidanceKey = "taskdock.minimalOptionAvoidanceEnabled"
+    static let taskbarOptionAvoidanceKey = "taskdock.taskbarOptionAvoidanceEnabled"
+    static let layoutSwitchShortcutEnabledKey = "taskdock.layoutSwitchShortcutEnabled"
+
+    func removeRecentApp(id: String) {
+        guard recentApps.contains(where: { $0.id == id }) else { return }
+        recentAppCloseTimes.removeValue(forKey: id)
+        defaults.set(recentAppCloseTimes, forKey: recentAppCloseTimesKey)
+        recentAppOpenTimes.removeValue(forKey: id)
+        defaults.set(recentAppOpenTimes, forKey: recentAppOpenTimesKey)
+        recentApps.removeAll { $0.id == id }
+    }
+
+    func toggleSingleIcon(for appID: String) {
+        if !singleIconAppIDs.insert(appID).inserted { singleIconAppIDs.remove(appID) }
+    }
+
+    func toggleAppGroupPin(_ app: FavoriteApp) {
+        if let index = appGroupPins.firstIndex(where: { $0.id == app.id }) {
+            appGroupPins.remove(at: index)
+        } else {
+            appGroupPins.insert(app, at: 0)
+        }
     }
 
     @discardableResult
@@ -559,6 +686,7 @@ final class SettingsStore: ObservableObject {
         defaults.set(layoutMode.rawValue, forKey: layoutModeKey)
         defaults.set(Double(taskbarHeight), forKey: taskbarHeightKey)
         defaults.set(taskbarItemWidthMode.rawValue, forKey: taskbarItemWidthModeKey)
+        defaults.set(Double(taskbarItemMaximumWidth), forKey: taskbarItemMaximumWidthKey)
         defaults.set(Double(taskbarItemFontSize), forKey: taskbarItemFontSizeKey)
         defaults.set(favoriteMagnificationEnabled, forKey: favoriteMagnificationEnabledKey)
         defaults.set(Double(favoriteMagnificationScale), forKey: favoriteMagnificationScaleKey)

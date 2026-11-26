@@ -44,7 +44,8 @@ final class TaskbarCollapseAnimator {
         icon.imageScaling = .scaleProportionallyUpOrDown
         background.addSubview(icon)
 
-        let title = NSTextField(labelWithString: window.title)
+        let title = NSTextField(labelWithString: TaskbarItemSizing.displayTitle(
+            window.title, bundleIdentifier: window.bundleIdentifier))
         title.frame = CGRect(x: 78, y: 22, width: 164, height: 40)
         title.font = .systemFont(ofSize: 16, weight: .semibold)
         title.textColor = .labelColor

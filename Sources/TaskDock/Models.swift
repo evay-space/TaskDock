@@ -85,12 +85,17 @@ struct WindowModel: Identifiable, Hashable {
     let isMain: Bool
     let axWindow: AXUIElement
     let finderTab: AXUIElement?
+    var isTrashWindow = false
 
-    var appKey: String { bundleIdentifier ?? "name:\(applicationName)" }
+    static let trashAppKey = "utility:trash"
+    var appKey: String {
+        isTrashWindow ? Self.trashAppKey : (bundleIdentifier ?? "name:\(applicationName)")
+    }
 
     static func == (lhs: WindowModel, rhs: WindowModel) -> Bool {
         lhs.id == rhs.id &&
         lhs.title == rhs.title &&
+        lhs.isTrashWindow == rhs.isTrashWindow &&
         lhs.isMinimized == rhs.isMinimized &&
         lhs.isFocused == rhs.isFocused &&
         lhs.isMain == rhs.isMain

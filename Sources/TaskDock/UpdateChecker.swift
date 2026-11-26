@@ -35,7 +35,7 @@ final class UpdateChecker: ObservableObject {
     private var lastCheckedAt: Date?
 
     init(currentVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0",
-         latestReleaseAPI: URL = URL(string: "https://api.github.com/repos/evay-spece/TaskDock/releases/latest")!,
+         latestReleaseAPI: URL = URL(string: "https://gitee.com/api/v5/repos/evayspace/TaskDock/releases/latest")!,
          session: URLSession = .shared) {
         self.currentVersion = currentVersion
         self.latestReleaseAPI = latestReleaseAPI
@@ -93,15 +93,18 @@ final class UpdateChecker: ObservableObject {
         defer { automaticCheckPending = false }
         do {
             var request = URLRequest(url: latestReleaseAPI)
-            request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue("TaskDock/\(currentVersion)", forHTTPHeaderField: "User-Agent")
             let (data, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                 throw UpdateError.invalidResponse
             }
-            let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+            let release = try JSONDecoder().decode(ReleasePayload.self, from: data)
             lastCheckedAt = Date()
-            guard let releaseURL = URL(string: release.htmlURL) else { throw UpdateError.invalidResponse }
+            let fallbackReleaseURL = URL(string: "https://gitee.com/evayspace/TaskDock/releases/tag/\(release.tagName)")
+            guard let releaseURL = release.htmlURL.flatMap(URL.init(string:)) ?? fallbackReleaseURL else {
+                throw UpdateError.invalidResponse
+            }
             let version = UpdateSupport.normalizedVersion(release.tagName)
             guard Self.isNewer(version, than: currentVersion) else {
                 installWhenReady = false
@@ -112,8 +115,7 @@ final class UpdateChecker: ObservableObject {
             let expectedAssetName = "TaskDock-\(version)-macOS-arm64.zip"
             guard let asset = release.assets.first(where: { $0.name == expectedAssetName }),
                   let assetURL = URL(string: asset.downloadURL),
-                  let digest = asset.digest,
-                  digest.lowercased().hasPrefix("sha256:") else {
+                  let digest = Self.resolvedSHA256Digest(assetDigest: asset.digest, releaseBody: release.body) else {
                 installWhenReady = false
                 status = .failed(message: "新版本缺少可验证的安装包", releaseURL: releaseURL)
                 return
@@ -192,6 +194,22 @@ final class UpdateChecker: ObservableObject {
             status = .failed(message: message, releaseURL: update.releaseURL)
         }
     }
+    static func resolvedSHA256Digest(assetDigest: String?, releaseBody: String?) -> String? {
+        if let assetDigest, assetDigest.lowercased().hasPrefix("sha256:") {
+            let hex = String(assetDigest.dropFirst("sha256:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if hex.count == 64, hex.allSatisfy(\.isHexDigit) {
+                return "sha256:\(hex.lowercased())"
+            }
+        }
+        guard let body = releaseBody else { return nil }
+        let pattern = #"SHA-?256\s*[:：]\s*`?([0-9a-fA-F]{64})`?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)),
+              let range = Range(match.range(at: 1), in: body) else {
+            return nil
+        }
+        return "sha256:\(body[range].lowercased())"
+    }
 }
 
 private final class UpdateDownloadProgressDelegate: NSObject, URLSessionDownloadDelegate {
@@ -215,10 +233,10 @@ private final class UpdateDownloadProgressDelegate: NSObject, URLSessionDownload
                     didFinishDownloadingTo location: URL) {}
 }
 
-private struct GitHubRelease: Decodable {
+private struct ReleasePayload: Decodable {
     let tagName: String
-    let htmlURL: String
-    let assets: [GitHubAsset]
+    let htmlURL: String?
+    let assets: [ReleaseAsset]
     let body: String?
 
     enum CodingKeys: String, CodingKey {
@@ -228,7 +246,7 @@ private struct GitHubRelease: Decodable {
     }
 }
 
-private struct GitHubAsset: Decodable {
+private struct ReleaseAsset: Decodable {
     let name: String
     let downloadURL: String
     let digest: String?

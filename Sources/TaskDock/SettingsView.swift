@@ -20,6 +20,8 @@ private enum SettingsPalette {
 private enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
+    case taskbar
+    case minimal
     case blacklist
     case about
     case dockCompanion
@@ -32,6 +34,8 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "通用"
         case .appearance: return "外观"
+        case .taskbar: return "任务栏"
+        case .minimal: return "极简模式"
         case .blacklist: return "黑名单"
         case .about: return "关于"
         case .files: return "右键功能"
@@ -44,6 +48,8 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape"
         case .appearance: return "circle.lefthalf.filled"
+        case .taskbar: return "menubar.dock.rectangle"
+        case .minimal: return "rectangle.compress.vertical"
         case .blacklist: return "rectangle.stack.badge.minus"
         case .about: return "info.circle"
         case .files: return "doc.badge.plus"
@@ -54,6 +60,13 @@ private enum SettingsTab: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
+    @AppStorage(MinimalTaskbarSizing.distinctItemsKey) private var minimalDistinctItems = false
+    @AppStorage(SettingsStore.taskbarOptionAvoidanceKey) private var taskbarOptionAvoidance = true
+    @AppStorage(SettingsStore.minimalOptionAvoidanceKey) private var minimalOptionAvoidance = true
+    @AppStorage(SettingsStore.layoutSwitchShortcutEnabledKey) private var layoutSwitchShortcutEnabled = true
+    @AppStorage(LayoutSwitchShortcutSettings.keyCodeKey) private var layoutSwitchKeyCode = LayoutSwitchShortcutSettings.defaultKeyCode
+    @AppStorage(LayoutSwitchShortcutSettings.modifiersKey) private var layoutSwitchModifiers = LayoutSwitchShortcutSettings.defaultModifiers
+    @AppStorage(LayoutSwitchShortcutSettings.characterKey) private var layoutSwitchCharacter = "h"
     @StateObject private var launchAtLogin = LaunchAtLoginSettings()
     @AppStorage(RecentAppHoverBehavior.settingsKey) private var recentAppHoverBehavior = RecentAppHoverBehavior.nameBubble.rawValue
     @ObservedObject var settings: SettingsStore
@@ -174,6 +187,8 @@ struct SettingsView: View {
                 switch selectedTab {
                 case .general: generalTab
                 case .appearance: appearanceTab
+                case .taskbar: taskbarTab
+                case .minimal: minimalTab
                 case .blacklist: blacklistTab
                 case .about: aboutTab
                 case .files:
@@ -228,31 +243,23 @@ struct SettingsView: View {
                     selectedTab = .about
                 }
             }
-            settingsSection(title: "任务栏外观") {
-                ExperimentalTaskbarGlassSettingsView()
-                Divider()
-                TaskbarBlackBackgroundSettingsView()
-            }
-            settingsSection(title: "任务项外观") {
-                TaskbarItemHazeSettingsView()
-                Divider()
+            settingsSection(title: "模式切换快捷键") {
+                Toggle("启用任务栏与极简模式切换", isOn: $layoutSwitchShortcutEnabled)
                 HStack {
-                    Text("任务项高亮颜色")
+                    Text("任务栏与极简模式")
                     Spacer()
-                    Picker("任务项高亮颜色", selection: $settings.taskItemHighlightStyle) {
-                        ForEach(TaskItemHighlightStyle.allCases) { style in
-                            Text(style.label).tag(style)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .onChange(of: settings.taskItemHighlightStyle) { _ in onVisualChanged() }
+                    GlobalShortcutRecorder(
+                        keyCode: $layoutSwitchKeyCode, modifiers: $layoutSwitchModifiers,
+                        character: $layoutSwitchCharacter, label: "录制模式切换快捷键",
+                        isAvailable: { $0 != minimizeKeyCode || $1 != minimizeModifiers }
+                    )
+                    .frame(width: 118, height: 25)
+                    .disabled(!layoutSwitchShortcutEnabled)
                 }
-            }
-            settingsSection(title: "收藏栏放大") {
-                Toggle("放大时将最近 App 和任务项整体右移", isOn: $magnificationPushesTasks)
-                Text("开启后保留最近 App，并为放大的收藏图标留出空间。")
+                .onChange(of: layoutSwitchShortcutEnabled) { _ in onChanged() }
+                .onChange(of: layoutSwitchKeyCode) { _ in onChanged() }
+                .onChange(of: layoutSwitchModifiers) { _ in onChanged() }
+                Text("默认 ⌃⌥⇧⌘H，每按一次切换一个模式。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             settingsSection(title: "窗口避让") {
@@ -510,7 +517,6 @@ struct SettingsView: View {
                     }
                 }
             }
-            modeVisualSettings(for: .taskbar)
         }
     }
 
@@ -519,10 +525,11 @@ struct SettingsView: View {
             HStack {
                 Text("最小化全部窗口")
                 Spacer()
-                MinimizeShortcutRecorder(
+                GlobalShortcutRecorder(
                     keyCode: $minimizeKeyCode,
                     modifiers: $minimizeModifiers,
-                    character: $minimizeCharacter
+                    character: $minimizeCharacter,
+                    isAvailable: { $0 != layoutSwitchKeyCode || $1 != layoutSwitchModifiers }
                 )
                 .frame(width: 118, height: 25)
             }
@@ -554,8 +561,79 @@ struct SettingsView: View {
         }
     }
 
+    private var taskbarMaximumWidthSlider: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("任务项最长长度")
+                Spacer()
+                Text("\(Int(settings.taskbarItemMaximumWidth.rounded())) pt")
+                    .monospacedDigit().foregroundStyle(.secondary)
+            }
+            ReleaseTunedSlider(value: $settings.taskbarItemMaximumWidth,
+                in: TaskbarItemSizing.maximumWidthRange, defaultValue: Double(TaskbarItemSizing.defaultFixedWidth))
+                .accessibilityLabel("任务项最长长度")
+                .onChange(of: settings.taskbarItemMaximumWidth) { _ in onLayoutChanged() }
+        }
+    }
+
+    private var taskbarTab: some View {
+        tabScrollView {
+            settingsSection(title: "布局") {
+                HStack {
+                    Label("任务栏两侧留白", systemImage: "arrow.left.and.right")
+                    Spacer()
+                    Text("\(Int(settings.taskbarSideInset.rounded())) pt")
+                        .monospacedDigit().foregroundStyle(.secondary)
+                }
+                ReleaseTunedSlider(value: $settings.taskbarSideInset, in: SettingsStore.taskbarSideInsetRange,
+                    defaultValue: ReleaseTunedSlider.preset("taskdock.taskbarLeadingInset", fallback: 88))
+                    .accessibilityLabel("任务栏两侧留白")
+                    .onChange(of: settings.taskbarSideInset) { _ in onLayoutChanged() }
+            }
+            settingsSection(title: "快捷键") {
+                Toggle("长按 Option 检查窗口重叠", isOn: $taskbarOptionAvoidance)
+            }
+            modeVisualSettings(for: .taskbar)
+        }
+    }
+
+    private var minimalTab: some View {
+        tabScrollView {
+            settingsSection(title: "极简模式", description: "任务栏居中显示，长度随图标和窗口数量自动调整。") {
+                Toggle("使用极简模式", isOn: Binding(
+                    get: { settings.layoutMode == .minimal },
+                    set: { enabled in
+                        settings.layoutMode = enabled ? .minimal : .taskbar
+                        onLayoutChanged()
+                    }
+                ))
+                Text("单窗口保留程序图标，下方圆点表示已打开；多个窗口展开为任务项。收藏和未收藏的程序混排，拖动图标可调整顺序。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            settingsSection(title: "快捷键") {
+                Toggle("长按 Option 检查窗口重叠", isOn: $minimalOptionAvoidance)
+            }
+            modeVisualSettings(for: .minimal)
+            settingsSection(title: "拖动与收藏", description: "沿用任务栏模式的操作方式。") {
+                Text("左右拖动图标或任务项调整顺序；将收藏图标拖离任务栏可取消收藏；从 Finder 拖入程序可添加收藏。")
+                    .font(.callout)
+            }
+        }
+    }
+
     private var appearanceTab: some View {
         tabScrollView {
+            settingsSection(title: "任务栏外观") {
+                ExperimentalTaskbarGlassSettingsView()
+                Divider()
+                TaskbarBlackBackgroundSettingsView()
+            }
+            settingsSection(title: "显示模式", description: "极简模式按内容伸缩；单窗口保留图标并显示运行圆点，多窗口展开为任务项。") {
+                Picker("显示模式", selection: $settings.layoutMode) {
+                    ForEach(TaskDockLayoutMode.allCases) { mode in Text(mode.label).tag(mode) }
+                }
+                .onChange(of: settings.layoutMode) { _ in onLayoutChanged() }
+            }
             settingsSection(title: "任务栏背景", description: "macOS 26 及以上使用原生液态玻璃，旧系统使用毛玻璃。任务栏与任务项保持固定外观；设置页和气泡跟随系统明暗模式。") {
                 HStack {
                     Label("任务栏背景透明度", systemImage: "circle.lefthalf.filled")
@@ -574,25 +652,38 @@ struct SettingsView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                Text("拖动实时预览并自动保存；0% 保留完整系统材质（推荐），100% 隐藏底座。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            settingsSection(title: "位置与尺寸", description: "调整任务栏留白、高度和收藏图标放大倍率。") {
-                HStack {
-                    Label("任务栏两侧留白", systemImage: "arrow.left.and.right")
-                    Spacer()
-                    Text("\(Int(settings.taskbarSideInset.rounded())) pt")
-                        .monospacedDigit()
+                if #available(macOS 26, *) {
+                    Text("拖动实时预览并自动保存；0% 保留完整液态玻璃，100% 只保留轻度毛玻璃虚化。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("拖动实时预览并自动保存；0% 保留完整系统材质（推荐），100% 隐藏底座。")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                ReleaseTunedSlider(value: $settings.taskbarSideInset, in: SettingsStore.taskbarSideInsetRange, defaultValue: ReleaseTunedSlider.preset("taskdock.taskbarLeadingInset", fallback: 88))
-                    .accessibilityLabel("任务栏两侧留白")
-                    .onChange(of: settings.taskbarSideInset) { _ in onLayoutChanged() }
-                Text("向右拖动，两侧同步向内收缩；实时生效并自动保存。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            }
+
+            settingsSection(title: "任务项外观") {
+                Toggle("区分选中与未选中", isOn: $minimalDistinctItems)
+                    .onChange(of: minimalDistinctItems) { _ in onVisualChanged() }
+                Divider()
+                TaskbarItemHazeSettingsView()
+                Divider()
+                HStack {
+                    Text("任务项高亮颜色")
+                    Spacer()
+                    Picker("任务项高亮颜色", selection: $settings.taskItemHighlightStyle) {
+                        ForEach(TaskItemHighlightStyle.allCases) { style in
+                            Text(style.label).tag(style)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .onChange(of: settings.taskItemHighlightStyle) { _ in onVisualChanged() }
+                }
+            }
+            settingsSection(title: "位置与尺寸", description: "任务栏和极简模式共用高度、文字大小和图标放大倍率。") {
                 HStack(alignment: .top, spacing: 28) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("大小")
@@ -629,19 +720,21 @@ struct SettingsView: View {
                     .fixedSize(horizontal: true, vertical: false)
                     .onChange(of: settings.taskbarItemFontSize) { _ in onVisualChanged() }
                 }
-                Text("仅调整任务栏任务项文字，共 5 档；默认 8 pt。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                taskbarMaximumWidthSlider
             }
 
-            settingsSection(title: "最近程序", description: "选择光标移到时钟图标上时的显示方式。") {
+            settingsSection(title: "图标放大") {
+                Toggle("放大时将最近 App 和任务项整体右移", isOn: $magnificationPushesTasks)
+            }
+
+            settingsSection(title: "应用程序", description: "选择光标移到「应用程序」图标上时的显示方式。") {
                 Picker("悬停显示", selection: $recentAppHoverBehavior) {
                     Text("名称小气泡").tag(RecentAppHoverBehavior.nameBubble.rawValue)
                     Text("程序列表大气泡").tag(RecentAppHoverBehavior.programList.rawValue)
                 }
                 Text(recentAppHoverBehavior == RecentAppHoverBehavior.programList.rawValue
-                    ? "光标移上去即可展开最近运行过的程序列表。"
-                    : "显示“最近运行过程序”；点击图标展开程序列表。")
+                    ? "光标移上去即可展开应用程序列表。"
+                    : "显示「应用程序」小气泡。点击图标展开列表。")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -875,8 +968,8 @@ struct SettingsView: View {
                 )
                     .onChange(of: settings.dockCompanionShowsRecentWindows) { _ in onChanged() }
                 settingsToggle(
-                    title: "显示底栏",
-                    description: "关闭后隐藏底栏背景和功能按钮，只显示任务项；任务项高度与 Dock 一致。",
+                    title: "显示功能按钮",
+                    description: "在融合栏显示隐藏或恢复全部 App 的按钮。",
                     isOn: $settings.dockCompanionShowsBottomBar
                 )
                     .onChange(of: settings.dockCompanionShowsBottomBar) { _ in onChanged() }
@@ -1007,26 +1100,6 @@ struct SettingsView: View {
 
     private func modeVisualSettings(for mode: TaskDockLayoutMode) -> some View {
         Group {
-            if mode == .dockCompanion {
-                settingsSection(title: "任务项透明度", description: "仅影响融合模式的任务项。") {
-                    HStack {
-                        Text("非选中项透明度")
-                        Spacer()
-                        Picker("非选中项透明度", selection: Binding(
-                            get: { Int((settings.transparency(in: mode) * 100).rounded()) },
-                            set: { settings.setTransparency(Double($0) / 100, in: mode); onVisualChanged() }
-                        )) {
-                            ForEach(Array(stride(from: 0, through: 70, by: 5)), id: \.self) { percent in
-                                Text("\(percent)%").tag(percent)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .fixedSize(horizontal: true, vertical: false)
-                    }
-                }
-            }
-
             settingsSection(title: "窗口显示", description: "仅影响当前模式的窗口清单。") {
                 settingsToggle(
                     title: "显示隐藏 App 的窗口",
@@ -1266,7 +1339,7 @@ struct SettingsView: View {
     private var updateStatusView: some View {
         switch updateChecker.status {
         case .idle:
-            Text("可检查 GitHub Release")
+            Text("可检查 Gitee Release")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         case .checking:

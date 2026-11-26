@@ -32,12 +32,27 @@ final class FinderCutHotkey {
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] _ in self?.updateRegistration() }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in self?.updateRegistration() }
         updateRegistration()
     }
 
+    private func syncFinderPollingTimer(isFinderFrontmost: Bool) {
+        if isFinderFrontmost && FileTypeSettings.isEnabled {
+            guard timer == nil else { return }
+            let t = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+                self?.updateRegistration()
+            }
+            t.tolerance = 0.05
+            timer = t
+        } else {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+
     private func updateRegistration() {
-        let finderIsActive = finderAcceptsFileShortcuts()
+        let isFinderFrontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.finder"
+        syncFinderPollingTimer(isFinderFrontmost: isFinderFrontmost)
+        let finderIsActive = isFinderFrontmost && finderAcceptsFileShortcuts()
         if finderIsActive && cutHotkey == nil {
             let id = EventHotKeyID(signature: 0x4E464358, id: 1)
             let status = RegisterEventHotKey(UInt32(kVK_ANSI_X), UInt32(cmdKey), id,

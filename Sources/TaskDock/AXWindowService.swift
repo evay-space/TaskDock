@@ -106,7 +106,9 @@ final class AXWindowService {
             guard let values = copyAttribute(axApp, kAXWindowsAttribute) as? [AXUIElement] else { continue }
             let focusedWindow = copyAttribute(axApp, kAXFocusedWindowAttribute)
             let mainWindow = copyAttribute(axApp, kAXMainWindowAttribute)
-            let displayableWindows = values.filter {
+            let finderInventory = app.bundleIdentifier == "com.apple.finder" ? finderWindowInventory(values) : nil
+            let windowCandidates = finderInventory?.windows ?? values
+            let displayableWindows = windowCandidates.filter {
                 shouldIncludeWindow(
                     $0,
                     bundleIdentifier: app.bundleIdentifier,
@@ -147,23 +149,42 @@ final class AXWindowService {
                     nextWindowOrder += 1
                     windowOrder[runtimeKey] = stableOrder
                 }
-                let tabs = finderTabsAsWindows && app.bundleIdentifier == "com.apple.finder"
-                    ? finderTabs(in: axWindow) : []
-                let entries: [AXUIElement?] = tabs.isEmpty ? [nil] : tabs.map { $0 as AXUIElement? }
-                for (tabIndex, tab) in entries.enumerated() {
-                    let tabTitle = tab.flatMap { copyAttribute($0, kAXTitleAttribute) as? String }?
+                let isFinder = app.bundleIdentifier == "com.apple.finder"
+                let tabs = finderInventory?.tabs[CFHash(axWindow)] ?? []
+                let document = isFinder ? copyAttribute(axWindow, kAXDocumentAttribute) : nil
+                let windowIsTrash = isFinder && Self.isTrashLocation(title: title, document: document)
+                let tabDetails = tabs.map { tab in
+                    let name = (copyAttribute(tab, kAXTitleAttribute) as? String)?
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    let selected = tab.map(isFinderTabSelected) ?? true
-                    let itemTitle = tab == nil ? title : tabTitle
+                    let selected = isFinderTabSelected(tab)
+                    let isTrash = selected ? windowIsTrash : Self.trashTitles.contains(name)
+                    return (tab: tab, title: name, selected: selected, isTrash: isTrash)
+                }
+                let hasTrashTabs = tabDetails.contains(where: \.isTrash)
+                let entries: [(tab: AXUIElement?, title: String, selected: Bool, isTrash: Bool)]
+                if !tabDetails.isEmpty && (finderTabsAsWindows || hasTrashTabs) {
+                    let regular = tabDetails.filter { !$0.isTrash }
+                    let activeRegular = regular.first(where: \.selected) ?? regular.first
+                    let shown = finderTabsAsWindows ? tabDetails : tabDetails.filter { detail in
+                        detail.isTrash || activeRegular.map { CFEqual($0.tab, detail.tab) } == true
+                    }
+                    entries = shown.map { ($0.tab, $0.title, $0.selected, $0.isTrash) }
+                } else {
+                    entries = [(nil, title, true, windowIsTrash)]
+                }
+                for (tabIndex, entry) in entries.enumerated() {
+                    let tab = entry.tab
+                    let selected = entry.selected
+                    let itemTitle = entry.title
                     let model = WindowModel(
                         id: tab.map { "\(runtimeKey)-tab-\(CFHash($0))" } ?? runtimeKey,
                         nativeWindowID: runtimeKey,
                         pid: pid,
                         bundleIdentifier: app.bundleIdentifier,
-                        applicationName: applicationName,
-                        applicationIcon: app.icon,
+                        applicationName: entry.isTrash ? "废纸篓" : applicationName,
+                        applicationIcon: entry.isTrash ? NSImage(named: NSImage.Name("NSTrashEmpty")) : app.icon,
                         rawTitle: itemTitle,
-                        title: WindowDisplayTitle.resolve(rawTitle: itemTitle,
+                        title: entry.isTrash ? "废纸篓" : WindowDisplayTitle.resolve(rawTitle: itemTitle,
                             applicationName: applicationName, bundleIdentifier: app.bundleIdentifier,
                             selectedNoteTitle: selectedNoteTitle),
                         accessibilityRole: role,
@@ -172,7 +193,8 @@ final class AXWindowService {
                         isFocused: focused && selected,
                         isMain: main && selected,
                         axWindow: axWindow,
-                        finderTab: tab
+                        finderTab: tab,
+                        isTrashWindow: entry.isTrash
                     )
                     appWindows.append((stableOrder, tabIndex, model))
                 }
@@ -184,6 +206,68 @@ final class AXWindowService {
         return result
     }
 
+    private struct FinderWindowInventory {
+        let windows: [AXUIElement]
+        let tabs: [CFHashCode: [AXUIElement]]
+    }
+
+    private func finderWindowInventory(_ windows: [AXUIElement]) -> FinderWindowInventory {
+        var tabsByWindow: [CFHashCode: [AXUIElement]] = [:]
+        var minimizedWindows: [(element: AXUIElement, key: CFHashCode, title: String, frame: CGRect)] = []
+        for window in windows where (copyAttribute(window, kAXIdentifierAttribute) as? String) == "FinderWindow" {
+            let key = CFHash(window)
+            tabsByWindow[key] = finderTabs(in: window)
+            guard (copyAttribute(window, kAXMinimizedAttribute) as? Bool) == true,
+                  let title = copyAttribute(window, kAXTitleAttribute) as? String,
+                  let frame = windowFrame(window) else { continue }
+            minimizedWindows.append((window, key, title, frame))
+        }
+
+        var mirrors: Set<CFHashCode> = []
+        for host in minimizedWindows {
+            guard let tabs = tabsByWindow[host.key], tabs.count > 1 else { continue }
+            let siblingTitles = tabs.compactMap { tab -> String? in
+                guard !isFinderTabSelected(tab) else { return nil }
+                let title = copyAttribute(tab, kAXTitleAttribute) as? String
+                return title
+            }
+            for title in siblingTitles {
+                // Finder may expose a minimized nonselected tab both under its
+                // host and as a separate same-frame AXDialog. Match one mirror
+                // per tab so separate windows with repeated titles stay visible.
+                if let mirror = minimizedWindows.first(where: { candidate in
+                    candidate.key != host.key && candidate.title == title
+                        && candidate.frame == host.frame && !mirrors.contains(candidate.key)
+                        && (tabsByWindow[candidate.key]?.isEmpty ?? true)
+                        && (copyAttribute(candidate.element, kAXSubroleAttribute) as? String) == kAXDialogSubrole
+                }) {
+                    mirrors.insert(mirror.key)
+                }
+            }
+        }
+        return FinderWindowInventory(windows: windows.filter { !mirrors.contains(CFHash($0)) }, tabs: tabsByWindow)
+    }
+
+    private static let trashTitles: Set<String> = {
+        let finder = Bundle(url: URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app"))
+        let localized = finder?.localizedString(forKey: "N39", value: "Trash", table: "LocalizableMerged") ?? "Trash"
+        return [localized, "Trash", ".Trash", "废纸篓", "廢紙簍", "垃圾桶", "ゴミ箱"]
+    }()
+
+    private static func isTrashLocation(title: String, document: AnyObject?) -> Bool {
+        if let value = document as? String, !value.isEmpty {
+            let url = value.hasPrefix("/") ? URL(fileURLWithPath: value) : URL(string: value)
+            if let url, url.isFileURL {
+                let path = url.standardizedFileURL.path
+                let homeTrash = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".Trash").standardizedFileURL.path
+                return path == homeTrash || path.hasSuffix("/.Trashes/\(getuid())")
+            }
+        }
+        // Finder's virtual Trash window does not always publish AXDocument.
+        return trashTitles.contains(title)
+    }
+
     @discardableResult
     func activate(_ window: WindowModel) -> Bool {
         guard let app = NSRunningApplication(processIdentifier: window.pid) else { return false }
@@ -191,6 +275,16 @@ final class AXWindowService {
         activationRequestID = requestID
         if app.isHidden { app.unhide() }
         let axApp = AXUIElementCreateApplication(window.pid)
+        // Pressing a different Finder tab also restores its minimized host.
+        // Restoring the previously selected tab first can display it briefly.
+        if let tab = window.finderTab, !isFinderTabSelected(tab), selectFinderTab(tab) {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != window.pid
+                && !app.activate(options: [.activateIgnoringOtherApps]) {
+                _ = setAttribute(axApp, kAXFrontmostAttribute, value: true as CFBoolean)
+            }
+            recentActivation = (window.id, Date())
+            return true
+        }
         let displayableWindows = (copyAttribute(axApp, kAXWindowsAttribute) as? [AXUIElement] ?? [])
             .filter { shouldIncludeWindow($0, bundleIdentifier: window.bundleIdentifier) }
         let currentWindow = currentAXWindow(for: window, among: displayableWindows) ?? window.axWindow
@@ -204,22 +298,37 @@ final class AXWindowService {
         let activatedThroughWorkspace = alreadyFrontmost || app.activate(options: [.activateIgnoringOtherApps])
         let activatedThroughAccessibility = activatedThroughWorkspace
             ? false : setAttribute(axApp, kAXFrontmostAttribute, value: true as CFBoolean)
-        // A single document window needs only app activation. AXMain/AXFocused/AXRaise
-        // after that can make apps such as ChatGPT briefly redraw the same window.
-        let promoted = needsWindowPromotion ? promote(currentWindow) : false
-        let selectedTab = selectFinderTab(window.finderTab)
-
-        // Some apps acknowledge activation before switching their selected window.
-        // Retry only when the requested window is still not focused; unconditional
-        // re-activation can briefly flash another window in a multi-window app.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self, weak app] in
-            guard let self, let app, !app.isTerminated,
-                  self.activationRequestID == requestID else { return }
-            guard needsWindowPromotion,
-                  NSWorkspace.shared.frontmostApplication?.processIdentifier == window.pid,
-                  !self.isCurrentlyFocused(window) else { return }
-            _ = self.promote(currentWindow)
-            _ = self.selectFinderTab(window.finderTab)
+        let promoted: Bool
+        var selectedTab = false
+        if let tab = window.finderTab {
+            // Raising the previous tab's Finder window after selecting a new
+            // tab can switch Finder back. Raise the host only if necessary,
+            // then make tab selection the last accessibility action.
+            let currentMain = copyAttribute(axApp, kAXMainWindowAttribute)
+            let hostIsMain = currentMain.map { CFEqual($0, currentWindow) } ?? false
+            promoted = (!alreadyFrontmost || wasMinimized || !hostIsMain) && promote(currentWindow)
+            selectedTab = selectFinderTab(tab)
+            if !selectedTab {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self] in
+                    guard let self, self.activationRequestID == requestID else { return }
+                    let currentTabs = self.finderTabs(in: currentWindow)
+                    let matching = currentTabs.filter {
+                        (self.copyAttribute($0, kAXTitleAttribute) as? String) == window.rawTitle
+                    }
+                    if matching.count == 1 { _ = self.selectFinderTab(matching.first) }
+                }
+            }
+        } else {
+            promoted = needsWindowPromotion && promote(currentWindow)
+            if needsWindowPromotion && !promoted && window.bundleIdentifier != "com.apple.finder" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { [weak self, weak app] in
+                    guard let self, let app, !app.isTerminated,
+                          self.activationRequestID == requestID,
+                          NSWorkspace.shared.frontmostApplication?.processIdentifier == window.pid,
+                          !self.isCurrentlyFocused(window) else { return }
+                    _ = self.promote(currentWindow)
+                }
+            }
         }
 
         let activated = restored || activatedThroughWorkspace || activatedThroughAccessibility || promoted || selectedTab
@@ -715,10 +824,10 @@ final class AXWindowService {
         if (copyAttribute(window, kAXMinimizedAttribute) as? Bool) == true {
             _ = setAttribute(window, kAXMinimizedAttribute, value: false as CFBoolean)
         }
+        if performAction(window, kAXRaiseAction) { return true }
         let madeMain = setAttribute(window, kAXMainAttribute, value: true as CFBoolean)
         let focused = setAttribute(window, kAXFocusedAttribute, value: true as CFBoolean)
-        let raised = performAction(window, kAXRaiseAction)
-        return madeMain || focused || raised
+        return madeMain || focused
     }
 
     private func windowFrame(_ window: AXUIElement) -> CGRect? {

@@ -9,6 +9,8 @@ final class SystemDockVisibilityController {
     private let restartDockAction: () -> Void
     private let snapshotKey = "taskdock.originalSystemDockPreferences"
     private var appliedHidden: Bool?
+    private let hiddenTileSizeKey = "taskdock.originalHiddenDockTileSize"
+    private let minimumTileSize = 16
     private let reservationSnapshotKey = "taskdock.originalDockReservationPreferencesV1"
     private let reservationKeys = ["orientation", "tilesize", "magnification", "launchanim", "no-bouncing"]
     private var reservationHeight: CGFloat?
@@ -35,20 +37,29 @@ final class SystemDockVisibilityController {
         }
         guard let dockDefaults else { return }
         let reservationChanged = restoreReservationOverrides()
-        guard appliedHidden != hidden || reservationChanged else { return }
+        let tileRestored = hidden ? false : restoreHiddenTileSize()
+        guard appliedHidden != hidden || reservationChanged || tileRestored else { return }
         let preferences = dockDefaults.persistentDomain(forName: domain) ?? [:]
         let autohideMatches = (preferences["autohide"] as? Bool) == hidden
         let delayMatches = hidden
             ? (preferences["autohide-delay"] as? NSNumber)?.doubleValue == 1000
             : preferences["autohide-delay"] == nil
-        if autohideMatches && delayMatches {
+        let tileSizeMatches = !hidden || (preferences["tilesize"] as? NSNumber)?.intValue == minimumTileSize
+        if autohideMatches && delayMatches && tileSizeMatches {
             appliedHidden = hidden
-            if reservationChanged { restartDockAction() }
+            if reservationChanged || tileRestored { restartDockAction() }
             return
         }
 
         captureVisibilityPreferences(preferences)
         if hidden {
+            if snapshotDefaults.dictionary(forKey: hiddenTileSizeKey) == nil {
+                snapshotDefaults.set([
+                    "present": preferences["tilesize"] != nil,
+                    "value": preferences["tilesize"] ?? 0
+                ], forKey: hiddenTileSizeKey)
+            }
+            dockDefaults.set(minimumTileSize, forKey: "tilesize")
             dockDefaults.set(true, forKey: "autohide")
             dockDefaults.set(1000.0, forKey: "autohide-delay")
         } else {
@@ -81,6 +92,7 @@ final class SystemDockVisibilityController {
             restartDockAction()
             return
         }
+        restoreHiddenTileSize()
         let preferences = dockDefaults.persistentDomain(forName: domain) ?? [:]
         captureVisibilityPreferences(preferences)
         if snapshotDefaults.dictionary(forKey: reservationSnapshotKey) == nil {
@@ -136,12 +148,29 @@ final class SystemDockVisibilityController {
         return changed
     }
 
+    @discardableResult
+    private func restoreHiddenTileSize() -> Bool {
+        guard let saved = snapshotDefaults.dictionary(forKey: hiddenTileSizeKey),
+              let dockDefaults else { return false }
+        let oldSize = dockDefaults.persistentDomain(forName: domain)?["tilesize"] as? NSNumber
+        let restoredSize = saved["present"] as? Bool == true ? saved["value"] as? NSNumber : nil
+        if let restoredSize {
+            dockDefaults.set(restoredSize, forKey: "tilesize")
+        } else {
+            dockDefaults.removeObject(forKey: "tilesize")
+        }
+        dockDefaults.synchronize()
+        snapshotDefaults.removeObject(forKey: hiddenTileSizeKey)
+        return oldSize != restoredSize
+    }
+
     func restore() {
         let reservationChanged = restoreReservationOverrides()
+        let tileRestored = restoreHiddenTileSize()
         guard let snapshot = snapshotDefaults.dictionary(forKey: snapshotKey),
               let dockDefaults else {
             appliedHidden = nil
-            if reservationChanged { restartDockAction() }
+            if reservationChanged || tileRestored { restartDockAction() }
             return
         }
         let preferences = dockDefaults.persistentDomain(forName: domain) ?? [:]
@@ -158,7 +187,7 @@ final class SystemDockVisibilityController {
         guard needsRestore else {
             snapshotDefaults.removeObject(forKey: snapshotKey)
             appliedHidden = nil
-            if reservationChanged { restartDockAction() }
+            if reservationChanged || tileRestored { restartDockAction() }
             return
         }
         if hadAutohide {

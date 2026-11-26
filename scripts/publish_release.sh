@@ -8,9 +8,9 @@ ASSET="$PROJECT_ROOT/dist/TaskDock-$VERSION-macOS-arm64.zip"
 NOTES="$PROJECT_ROOT/docs/releases/$VERSION.md"
 [[ -f "$ASSET" && -f "$NOTES" ]]
 git -C "$PROJECT_ROOT" ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null
-if gh release view "$TAG" -R evay-spece/TaskDock >/dev/null 2>&1; then
+if gh release view "$TAG" -R evay-space/TaskDock >/dev/null 2>&1; then
   echo "Release already exists: $TAG" >&2
   exit 1
 fi
-gh release create "$TAG" "$ASSET" -R evay-spece/TaskDock \
+gh release create "$TAG" "$ASSET" -R evay-space/TaskDock \
   --title "TaskDock $TAG" --notes-file "$NOTES" --verify-tag

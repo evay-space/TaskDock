@@ -7,9 +7,9 @@ enum RecentAppHoverBehavior: String, CaseIterable {
 enum RecentAppDisplayPolicy {
     static func visible<App>(
         from history: [App],
-        excluding isFavorite: (App) -> Bool,
-        limit: Int = 10
+        excluding isExcluded: (App) -> Bool,
+        limit: Int = 15
     ) -> [App] {
-        Array(history.filter { !isFavorite($0) }.prefix(max(0, limit)))
+        Array(history.filter { !isExcluded($0) }.prefix(max(0, limit)))
     }
 }

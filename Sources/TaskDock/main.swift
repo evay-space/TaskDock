@@ -140,7 +140,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             button.toolTip = "TaskDock"
         }
         statusMenu.delegate = self
-        statusMenu.minimumWidth = 285
         item.menu = statusMenu
         statusItem = item
         rebuildStatusMenu()
@@ -239,19 +238,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusMenu.addItem(.separator())
 
         let isHidden = panelController?.isTaskDockHidden == true
-        let visibilityTitle = isHidden ? "切换成TaskDock" : "切换成系统程序坞"
+        let visibilityTitle = isHidden ? "切换到 TaskDock" : "切换到系统 Dock"
         let visibilityItem = NSMenuItem(
             title: visibilityTitle,
             action: isHidden ? #selector(showTaskDock) : #selector(hideTaskDock),
             keyEquivalent: ""
         )
         let modifier = panelController?.toggleModifierLabel ?? "⌥"
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.tabStops = [NSTextTab(textAlignment: .right, location: 264, options: [:])]
-        visibilityItem.attributedTitle = NSAttributedString(
-            string: "\(visibilityTitle)\t双击 \(modifier)",
-            attributes: [.paragraphStyle: paragraph]
-        )
+        visibilityItem.toolTip = "双击 \(modifier)"
         visibilityItem.setAccessibilityLabel("\(visibilityTitle)，双击 \(modifier)")
         visibilityItem.image = NSImage(
             systemSymbolName: isHidden ? "eye" : "eye.slash",

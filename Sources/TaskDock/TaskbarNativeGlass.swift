@@ -105,6 +105,14 @@ final class TaskbarNativeContentView: NSView {
 /// SwiftUI only places this invisible anchor. AppKit owns the actual glass rendering.
 final class TaskbarGlassAnchorView: NSView {
     private var glass: NSView
+    private let backdropBlur: NSVisualEffectView?
+    private var appliedCornerRadius: CGFloat?
+    private var leadingInset: CGFloat = 0
+    private var trailingInset: CGFloat = 0
+    private let glassMask = CAShapeLayer()
+    private let blurMask = CAShapeLayer()
+    private var maskedBounds: CGRect?
+    private var maskedCornerRadius: CGFloat?
 
     private static func makeGlass() -> NSView {
         if #available(macOS 26, *) {
@@ -122,8 +130,22 @@ final class TaskbarGlassAnchorView: NSView {
         }
     }
 
+    private static func makeBackdropBlur() -> NSVisualEffectView? {
+        guard #available(macOS 26, *) else { return nil }
+        let effect = NSVisualEffectView(frame: .zero)
+        effect.material = .hudWindow
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.appearance = TaskDockAppearance.fixed
+        effect.alphaValue = 0.7
+        effect.wantsLayer = true
+        effect.layer?.masksToBounds = true
+        return effect
+    }
+
     override init(frame: NSRect) {
         glass = Self.makeGlass()
+        backdropBlur = Self.makeBackdropBlur()
         super.init(frame: frame)
     }
 
@@ -131,17 +153,23 @@ final class TaskbarGlassAnchorView: NSView {
     required init?(coder: NSCoder) { nil }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func configure(cornerRadius: CGFloat, opacity: Double) {
+    func configure(cornerRadius: CGFloat, opacity: Double,
+                   leadingInset: CGFloat = 0, trailingInset: CGFloat = 0) {
+        self.leadingInset = leadingInset
+        self.trailingInset = trailingInset
         TaskbarExperimentalGlass.synchronizePreferenceIsolation()
-        if #available(macOS 26, *), let effect = glass as? NSGlassEffectView {
-            effect.cornerRadius = cornerRadius
-            effect.tintColor = nil
-        } else {
-            glass.layer?.cornerRadius = cornerRadius
+        if appliedCornerRadius != cornerRadius {
+            appliedCornerRadius = cornerRadius
+            if #available(macOS 26, *), let effect = glass as? NSGlassEffectView {
+                effect.cornerRadius = cornerRadius
+            } else {
+                glass.layer?.cornerRadius = cornerRadius
+            }
+            backdropBlur?.layer?.cornerRadius = cornerRadius
         }
-        glass.alphaValue = CGFloat(min(1, max(0, opacity)))
+        let alpha = CGFloat(min(1, max(0, opacity)))
+        if glass.alphaValue != alpha { glass.alphaValue = alpha }
         synchronizeGlass()
-        needsLayout = true
     }
 
     override func viewDidMoveToWindow() {
@@ -154,15 +182,62 @@ final class TaskbarGlassAnchorView: NSView {
         synchronizeGlass()
     }
 
-    func detachGlass() { glass.removeFromSuperview() }
+    func detachGlass() {
+        glass.removeFromSuperview()
+        backdropBlur?.removeFromSuperview()
+    }
 
     private func synchronizeGlass() {
         guard let root = window?.contentView as? TaskbarNativeContentView else {
             detachGlass()
             return
         }
+        let frame = convert(bounds, to: root)
+        let hidden = isHiddenOrHasHiddenAncestor || bounds.isEmpty
+        if let backdropBlur {
+            root.attachGlass(backdropBlur)
+            if backdropBlur.frame != frame { backdropBlur.frame = frame }
+            if backdropBlur.isHidden != hidden { backdropBlur.isHidden = hidden }
+        }
         root.attachGlass(glass)
-        glass.frame = convert(bounds, to: root)
-        glass.isHidden = isHiddenOrHasHiddenAncestor || bounds.isEmpty
+        if glass.frame != frame { glass.frame = frame }
+        if glass.isHidden != hidden { glass.isHidden = hidden }
+        updateMask(canvasSize: frame.size)
+    }
+
+    // The visible pill can grow without resizing either native effect view on
+    // every display frame. Clip both effects to the same animated outline.
+    private func updateMask(canvasSize: CGSize) {
+        let canvas = CGRect(origin: .zero, size: canvasSize)
+        let visible = CGRect(x: leadingInset, y: 0,
+            width: max(0, canvas.width - leadingInset - trailingInset), height: canvas.height)
+        if visible == canvas {
+            if maskedBounds != nil {
+                glass.layer?.mask = nil
+                backdropBlur?.layer?.mask = nil
+                maskedBounds = nil
+            }
+            return
+        }
+        let radius = min(appliedCornerRadius ?? 0, visible.width / 2, visible.height / 2)
+        let changed = maskedBounds != visible || maskedCornerRadius != radius || glassMask.frame != canvas
+        guard changed else { return }
+        maskedBounds = visible
+        maskedCornerRadius = radius
+        let path = CGPath(roundedRect: visible, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        glassMask.frame = canvas
+        glassMask.path = path
+        blurMask.frame = canvas
+        blurMask.path = path
+        if glass.layer?.mask !== glassMask {
+            glass.wantsLayer = true
+            glass.layer?.mask = glassMask
+        }
+        if let backdropBlur, backdropBlur.layer?.mask !== blurMask {
+            backdropBlur.layer?.mask = blurMask
+        }
+        CATransaction.commit()
     }
 }
